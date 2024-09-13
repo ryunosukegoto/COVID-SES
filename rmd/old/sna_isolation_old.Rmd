@@ -1,0 +1,248 @@
+---
+title: "SNA isolation"
+author: "Ryunosuke Goto"
+date: "10/2/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+
+#to run RMD
+#library(rmarkdown)
+#rootdir <- system("git rev-parse --show-toplevel", intern=TRUE)[1]
+#rmarkdown::render(paste(rootdir,"rmd/sna_isolation.Rmd", sep="/"))
+
+knitr::opts_chunk$set(warning=FALSE, message=TRUE, echo=TRUE)
+
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(arsenal)
+
+rootdir <- system("git rev-parse --show-toplevel", intern=TRUE)[1]
+
+source(paste(rootdir,"R/degree.R",sep="/"))
+
+options(timeout=2000)
+sampleList <- degree(redo=TRUE) #set redo=TRUE to update
+sample = sampleList[[1]]
+sample.long = sampleList[[2]]
+```
+
+##Plot trends
+```{r plot trends, cache=FALSE, results='hide', echo=FALSE, fig.width=8, fig.height=6}
+
+#plot individual time series by behavior
+ggplot(sample.long, aes(x = round, y = zdegree, color = behavior)) +
+  geom_line(aes(group = ID), alpha = .5) +
+  theme_bw() +
+  labs(
+    title = "Trajectories of individual standardized degrees",
+    x = "Round",
+    y = "Standardized degree",
+    color = NULL) +
+  theme(plot.title = element_text(hjust = 0.5))
+
+#plot means and CIs by behavior
+sum_zdegree <- sample.long %>% 
+  group_by(round, behavior) %>%
+  summarise(mean = mean(zdegree),
+            ci   = 1.96 * sd(zdegree)/sqrt(n()))
+pd <- position_dodge(width = 0.1)
+sum_zdegree %>%
+  ggplot(aes(x = round, y = mean, group = behavior)) +
+  geom_line(aes(linetype = behavior), position = pd) +
+  geom_errorbar(aes(ymin = mean - ci, ymax = mean + ci),
+                width = .1, position = pd) +
+  theme_bw() +
+  geom_point(size = 4, position = pd) +
+  geom_point(size = 3, color = "white", position = pd)+
+  labs(title = "Trajectories of mean standardized degrees",
+    x = "Round",
+    y = "Standardized degree",
+    color = NULL,
+    linetype = NULL) +
+    theme(plot.title = element_text(hjust = 0.5))
+
+sample.long <- sample.long %>%
+  mutate(connectRate =
+           case_when(
+             connecting>=0.5 & connecting<0.6 ~ "0.5-0.6",
+             connecting>=0.6 & connecting<0.7 ~ "0.6-0.7",
+             connecting>=0.7 & connecting<0.8 ~ "0.7-0.8",
+             connecting>=0.8 & connecting<0.9 ~ "0.8-0.9",
+             connecting>=0.9 & connecting<1 ~ "0.9-1.0"
+           )
+  )
+sample.long$connectRate = factor(sample.long$connectRate)
+
+#plot individual time series by connecting
+ggplot(sample.long, aes(x = round, y = zdegree, color = connecting)) +
+  geom_line(aes(group = ID), alpha = .5) +
+  theme_bw() +
+  labs(
+    title = "Trajectories of individual standardized degrees",
+    x = "Round",
+    y = "Standardized degree",
+    color = "Rate of initially making new links \nor not breaking links") +
+  scale_color_gradient(low="blue", high="red") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+#plot means and CIs by initial rewiring
+sum_zdegree <- sample.long %>% 
+  group_by(round, connectRate) %>%
+  summarise(mean = mean(zdegree),
+            ci   = 1.96 * sd(zdegree)/sqrt(n()))
+pd <- position_dodge(width = 0.1)
+sum_zdegree %>%
+  ggplot(aes(x = round, y = mean, group = connectRate)) +
+  geom_line(aes(linetype = connectRate), position = pd) +
+  geom_errorbar(aes(ymin = mean - ci, ymax = mean + ci),
+                width = .1, position = pd) +
+  theme_bw() +
+  geom_point(size = 4, position = pd) +
+  geom_point(size = 3, color = "white", position = pd)+
+  labs(title = "Trajectories of mean standardized degrees",
+    x = "Round",
+    y = "Standardized degree",
+    color = NULL,
+    linetype = NULL) +
+    theme(plot.title = element_text(hjust = 0.5))
+
+
+
+```
+
+
+##Clustering
+```{r clustering, cache=FALSE, echo=FALSE, fig.width=8, fig.height=8}
+#####Dynamic time warping (time series clustering)#####
+#https://rstudio-pubs-static.s3.amazonaws.com/474160_0761428e8683401e941a92a4177254a4.html
+library(TSclust)
+library(dtwclust)
+sample.clust = sample[c("zdegree.0","zdegree.1",
+                        "zdegree.2","zdegree.3",
+                        "zdegree.4","zdegree.5",
+                        "zdegree.6","zdegree.7",
+                        "zdegree.8","zdegree.9","zdegree.10")]
+
+cluster.eval <- tsclust(sample.clust, k = 2L:13L,
+                   type="partitional",
+                   distance = "dtw", centroid = "pam",
+                   seed = 3247, trace = TRUE)
+
+cluster.eval <- data.frame(sapply(cluster.eval,cvi))
+colnames(cluster.eval) <- c(2:13)
+
+#Silhouette (Sil), score function (SF), Calinski-Harabasz index (CH), Dunn index (D)
+#the local maximum is considered the appropriate number of clusters
+cluster.eval[c("Sil","SF","CH","D"),]
+
+#Davies-Bouldin index (DB), modified Davies-Bouldin index (DBstar), COP index (COP)
+#the local minimum is considered the appropriate number of clusters
+cluster.eval[c("DB","DBstar","COP"),]
+
+#based on the above evaluations, 
+#six clusters is determined to be the appropriate number of clusters
+cluster <- tsclust(sample.clust, k = 6L,
+                   type="partitional",
+                   distance = "dtw", centroid = "pam",
+                   seed = 3247, trace = TRUE)
+
+
+
+
+#####t-SNE#####
+#scatter plot of data points; T-sne is used to reduce the dimensionality to two
+library(dplyr)
+library(Rtsne)
+library(ggplot2)
+sample.tsne = sample[c("zdegree.0","zdegree.1",
+                       "zdegree.2","zdegree.3",
+                       "zdegree.4","zdegree.5",
+                       "zdegree.6","zdegree.7",
+                       "zdegree.8","zdegree.9","zdegree.10")]
+clust = cbind(
+  sample, 
+  cluster = cluster@cluster
+)
+colors = rainbow(length(unique(clust$cluster)))
+names(colors) = unique(clust$cluster)
+set.seed(1)
+tsne = Rtsne(sample.tsne, dims = 2, perplexity=30, verbose=TRUE, max_iter = 500, check_duplicates = FALSE)
+
+g <- ggplot(data.frame(tsne$Y),aes(x=tsne$Y[,1],y=tsne$Y[,2],color = as.factor(clust$cluster)))+
+  geom_point() +
+  #ggtitle("Six-cluster model") +
+  xlab("tSNE dimension 1") +
+  ylab("tSNE dimension 2") +
+  scale_color_discrete(name  ="Cluster") + 
+  theme_classic() +
+  theme(plot.title = element_text(hjust = 0.5)) 
+
+g
+
+
+
+#####investigate clusters######
+#convert to long format
+clust.res <- gather(cbind(sample, cluster = cluster@cluster)[c("ID","behavior","connecting","cluster",
+                               "zdegree.0","zdegree.1",
+                               "zdegree.2","zdegree.3",
+                               "zdegree.4","zdegree.5",
+                               "zdegree.6","zdegree.7",
+                               "zdegree.8","zdegree.9","zdegree.10")],
+                      round, zdegree,
+                      zdegree.0:zdegree.10, factor_key=TRUE)
+
+clust.res$round <- as.numeric(mapply(clust.res$round, FUN=function(t) gsub("zdegree.","",x=t)))
+
+clust.res <- clust.res %>%
+  mutate(behavior = 
+           case_when(
+             behavior=="C" ~ "Initial cooperator",
+             behavior=="D" ~ "Initial defector"
+           ))
+
+clust.res$cluster <- factor(clust.res$cluster)
+
+
+#plot each cluster and the time series that belong to each cluster
+plot(cluster, type = "sc")
+
+#plot means and CIs
+sum_clust <- clust.res %>% 
+  group_by(round, cluster) %>%
+  summarise(mean = mean(zdegree),
+            ci   = 1.96 * sd(zdegree)/sqrt(n()))
+pd <- position_dodge(width = 0.1)
+sum_clust %>%
+  ggplot(aes(x = round, y = mean, group = cluster)) +
+  geom_line(aes(color = cluster), position = pd) +
+  geom_errorbar(aes(ymin = mean - ci, ymax = mean + ci, color=cluster),
+                width = .1, position = pd) +
+  theme_bw() +
+  geom_point(size = 4, position = pd, aes(color=cluster)) +
+  labs(
+    title = "Trajectories of standardized degrees",
+    x = "Round",
+    y = "Standardized degree",
+    color = NULL,
+    linetype = NULL) +
+  theme(plot.title = element_text(hjust = 0.5))
+
+
+```
+
+
+
+##Characteristics of each cluster
+```{r, results="asis"}
+#characteristics of each cluster
+table.clust <- tableby(cluster ~ ., data = clust[c("behavior","connecting","zdegree.0","zdegree.10","cluster")], 
+                  numeric.test="kwt", cat.test="chisq",
+                  digits.p=3, digits.pct=1, digits=2)
+res.clust = summary(table.clust, title = "Clustering results")
+res.clust
+```
+

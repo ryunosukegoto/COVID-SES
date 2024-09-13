@@ -1,0 +1,328 @@
+---
+title: "Does visibility of wealth segregate the rich and the poor and affect network structure?"
+author: "Ryunosuke Goto"
+date: "11/1/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+
+#to run RMD
+#library(rmarkdown)
+#rootdir <- system("git rev-parse --show-toplevel", intern=TRUE)[1]
+#rmarkdown::render(paste(rootdir,"rmd/communities.Rmd", sep="/"))
+
+knitr::opts_chunk$set(echo = TRUE)
+
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(arsenal)
+library(gridExtra)
+library(ggpubr)
+library(cowplot)
+library(grid)
+library(MASS)
+library(knitr)
+library(igraph)
+library(data.table)
+library(Rtsne)
+library(caret)
+library(pdp)
+library(dtwclust)
+library(randomForest)
+library(igraph)
+
+rootdir <- system("git rev-parse --show-toplevel", intern=TRUE)[1]
+
+source(paste(rootdir,"R/degree.R",sep="/"))
+sampleList <- degree(redo=TRUE) #set redo=TRUE to update
+
+g.isolation = sampleList[[3]]
+sample = sampleList[[1]]
+sample.wide = sampleList[[4]]
+cdata = sampleList[[5]]
+ndata = sampleList[[6]]
+
+#define isolation
+sample.wide$isolated = ifelse(sample.wide$degree.1<=1 | sample.wide$degree.2<=1 | sample.wide$degree.3<=1 | sample.wide$degree.4<=1 | sample.wide$degree.5<=1| sample.wide$degree.6<=1 | sample.wide$degree.7<=1 | sample.wide$degree.8<=1 | sample.wide$degree.9<=1 | sample.wide$degree.10<=1, 1, 0)
+```
+
+
+
+#Do initial shortest path length, global clustering coefficient, and cooporation rate among popular individuals determine isolation?
+```{r}
+round = NULL
+gameID = NULL 
+nodes = NULL
+meanDegree = NULL
+meanDegreeCoop = NULL #mean degree among those who cooperated
+meanDegreeDefect = NULL #mean degree among those who defected
+meanDist = NULL #mean shortest path length divided by the maximum possible path length (Nvertices - 1)
+maxDist = NULL #max shortest path length divided by the maximum possible path length (Nvertices - 1)
+coefGlobal = NULL #global clustering coefficient
+percentCoop = NULL #proportion of those who cooperated
+percentCoopPopular = NULL #proportion of those who cooperated, among those with degree >=6
+communities = NULL #number of communities
+wealthDiff = NULL #difference in wealth between richest and poorest communities
+wealthSD = NULL #standard deviation of communities' wealth
+
+for(i in 1:length(g.isolation)){
+    round[i] =  mean(V(g.isolation[[i]])$round)
+    gameID[i] = V(g.isolation[[i]])$gameID[1]
+    nodes[i] = vcount(g.isolation[[i]])
+    meanDegree[i] = mean(igraph::degree(g.isolation[[i]]),na.rm=TRUE)
+    meanDegreeCoop[i] = mean(igraph::degree(g.isolation[[i]])[V(g.isolation[[i]])$behavior=="C"],na.rm=TRUE)
+    meanDegreeDefect[i] = mean(igraph::degree(g.isolation[[i]])[V(g.isolation[[i]])$behavior=="D"],na.rm=TRUE)
+    meanDist[i] = mean(distances(g.isolation[[i]])[distances(g.isolation[[i]])!=0 & distances(g.isolation[[i]])!=Inf],na.rm=TRUE) / length(V(g.isolation[[i]])-1)
+    maxDist[i] = max(distances(g.isolation[[i]])[distances(g.isolation[[i]])!=0 & distances(g.isolation[[i]])!=Inf],na.rm=TRUE) / length(V(g.isolation[[i]])-1)
+    coefGlobal[i] = transitivity(g.isolation[[i]], type="global")
+    percentCoop[i] = prop.table(table(V(g.isolation[[i]])$behavior))["C"]
+    percentCoopPopular[i] = prop.table(table(V(g.isolation[[i]])$behavior[igraph::degree(g.isolation[[i]])>=6]))["C"]
+    communities[i] = max(membership(cluster_louvain(g.isolation[[i]])),na.rm=TRUE)
+    wealthDiff[i] = max(aggregate(V(g.isolation[[i]])$cumulativePayoff, list(factor(membership(cluster_louvain(g.isolation[[i]])))), FUN=mean, na.rm=TRUE)$x)-min(aggregate(V(g.isolation[[i]])$cumulativePayoff, list(factor(membership(cluster_louvain(g.isolation[[i]])))), FUN=mean, na.rm=TRUE)$x)
+    wealthSD[i] = sd(aggregate(V(g.isolation[[i]])$cumulativePayoff, list(factor(membership(cluster_louvain(g.isolation[[i]])))), FUN=mean, na.rm=TRUE)$x)
+}
+
+smallWorld = data.frame(
+  round = round,
+  gameID = gameID,
+  nodes = nodes,
+  meanDegree = meanDegree,
+  meanDegreeCoop = meanDegreeCoop,
+  meanDegreeDefect = meanDegreeDefect,
+  diffDegreeCD = meanDegreeCoop - meanDegreeDefect,
+  meanDist = meanDist,
+  maxDist = maxDist,
+  coefGlobal = coefGlobal,
+  percentCoop = percentCoop,
+  percentCoopPopular = percentCoopPopular,
+  communities = communities,
+  wealthDiff = wealthDiff,
+  wealthSD = wealthSD
+)
+
+
+round = NULL
+gameID = NULL
+visibleWealth = NULL
+n=1
+for(i in unique(cdata$round)){
+  for(m in unique(cdata$gameID)){
+    round[n] = as.numeric(i)-1
+    gameID[n] = m
+    visibleWealth[n] = ifelse(cdata[cdata$round==i & cdata$gameID==m,]$showScore[1]=="true",1,0)
+    n=n+1
+  }
+}
+
+smallWorld.2 = data.frame(
+  round = round,
+  gameID = gameID,
+  visibleWealth = visibleWealth
+)
+
+smallWorld = merge(smallWorld, smallWorld.2, by=c("gameID","round"), all.x=TRUE)
+
+smallWorld.initial = subset(smallWorld, smallWorld$round==0)[c("gameID","visibleWealth")]
+
+smallWorld.initial = merge(smallWorld.initial, smallWorld[smallWorld$round==10,][c("gameID","coefGlobal","meanDist","communities","wealthDiff","wealthSD")], by=c("gameID"), all.x=TRUE)
+smallWorld.initial = smallWorld.initial %>% 
+  rename(
+    coefGlobal.10 = coefGlobal,
+    meanDist.10 = meanDist,
+    communities.10 = communities,
+    wealthDiff.10 = wealthDiff,
+    wealthSD.10 = wealthSD
+    )
+
+Mode <- function(x) {
+  ux <- unique(x)
+  ux[which.max(tabulate(match(x, ux)))]
+}
+smallWorld.initial = merge(smallWorld.initial,aggregate(inequality~gameID,data=sample,FUN=Mode),by=c("gameID"), all.x=TRUE)
+smallWorld.initial = merge(smallWorld.initial,aggregate(gini~gameID,data=sample,FUN=Mode),by=c("gameID"), all.x=TRUE)
+
+#percent of people that end up being isolated for each gameID
+percentIsolated = NULL
+percentIsolated = aggregate(isolated ~ gameID, data=sample.wide, FUN=mean, na.rm=TRUE)
+
+smallWorld.initial = merge(smallWorld.initial[c("gameID","coefGlobal.10","meanDist.10","communities.10","wealthDiff.10","wealthSD.10","visibleWealth","inequality","gini")],percentIsolated, by="gameID", all.x=TRUE)
+
+#mean shortest path length
+reg = glm(meanDist.10 ~ visibleWealth*gini, 
+      data = smallWorld.initial, 
+      family = gaussian(link = "identity"))
+summary(reg)
+
+#global clustering coefficient
+reg = glm(coefGlobal.10 ~ visibleWealth*gini, 
+      data = smallWorld.initial, 
+      family = gaussian(link = "identity"))
+summary(reg)
+
+#number of communities
+reg = glm(communities.10 ~ visibleWealth*gini, 
+      data = smallWorld.initial, 
+      family = gaussian(link = "identity"))
+summary(reg)
+
+
+reg = glm(wealthDiff.10 ~ visibleWealth*gini, 
+      data = smallWorld.initial, 
+      family = gaussian(link = "identity"))
+summary(reg)
+
+
+reg = glm(wealthSD.10 ~ visibleWealth*gini, 
+      data = smallWorld.initial, 
+      family = gaussian(link = "identity"))
+summary(reg)
+
+#previous roundのisolationがnext roundのisolationに影響するため、個々の設定(とそのInteraction)の影響を調べるには初期条件を使いたい。そのためにはもう少し大きいNが必要
+```
+
+
+#How many links are made/broken in the next round by global clustering coefficient, mean shortest path length, and cooporation rate among popular individuals?
+##Adjust for mean degree in linear regression and using random forest
+```{r}
+smallWorld.rf = smallWorld[c("linksLost","meanDist","coefGlobal","meanDegree","round","visibleWealth","percentCoopPopular")]
+smallWorld.rf = smallWorld.rf[complete.cases(smallWorld.rf),]
+smallWorld.rf$round = factor(smallWorld.rf$round)
+smallWorld.rf = smallWorld.rf %>% mutate(round = factor(round, labels = make.names(levels(round))))
+
+set.seed(10)
+control.rf <- trainControl(method='repeatedcv', 
+                                 number=10, 
+                                 repeats=3,
+                                 search = 'random',
+                                 #classProbs=TRUE,
+                                 #summaryFunction = multiClassSummary,
+                                 allowParallel = TRUE)
+
+rf <- caret::train(linksLost ~ meanDist + coefGlobal + meanDegree + round + visibleWealth + percentCoopPopular,
+                         data = smallWorld.rf,
+                         method = 'rf',
+                         metric = 'RMSE',
+                         tuneLength  = 30, 
+                         verbose=TRUE,
+                         trControl = control.rf)
+print(rf)
+
+
+
+
+
+
+#partial dependence plot
+pdp = partial(rf, pred.var = c("meanDist","coefGlobal"), plot = FALSE)
+
+pdp.df = data.frame(
+  meanDist = pdp$meanDist,
+  coefGlobal = pdp$coefGlobal,
+  linksLost = pdp$yhat
+)
+
+annotations <- data.frame(
+        xpos = c(-Inf,-Inf,Inf,Inf),
+        ypos =  c(-Inf, Inf,-Inf,Inf),
+        annotateText = c("Random network","'Discrete'",
+                         "Small-world","Regular lattice"),
+        hjustvar = c(-0.1,-0.1,1.1,1.1) ,
+        vjustvar = c(-0.5,1.2,-0.5,1.2))
+
+g.pdp = ggplot(data = pdp.df, aes(x = coefGlobal, y = meanDist)) + 
+  geom_tile(aes(fill = linksLost)) +
+  ggtitle("Links lost, adjusted for mean degree") +
+  scale_x_continuous("Global clustering coefficient") +  
+  scale_y_continuous("Mean shortest path length") + 
+  scale_fill_continuous(type = "viridis") +
+  labs(fill="(links broken - links made)/max number of links") +
+  geom_text(data=annotations,color="red",aes(x=xpos,y=ypos,hjust=hjustvar,vjust=vjustvar,label=annotateText))
+
+g.pdp
+
+
+#regression
+reg = glm(linksLost ~ coefGlobal + meanDist + meanDegree + factor(round), 
+      data = smallWorld, 
+      family = gaussian(link = "identity"))
+summary(reg)
+
+
+
+
+
+
+
+#partial dependence plot
+pdp = partial(rf, pred.var = c("meanDist","percentCoopPopular"), plot = FALSE)
+
+pdp.df = data.frame(
+  meanDist = pdp$meanDist,
+  percentCoopPopular = pdp$percentCoopPopular,
+  linksLost = pdp$yhat
+)
+
+annotations <- data.frame(
+        xpos = c(-Inf,-Inf,Inf,Inf),
+        ypos =  c(-Inf, Inf,-Inf,Inf),
+        annotateText = c("Random network","'Discrete'",
+                         "Small-world","Regular lattice"),
+        hjustvar = c(-0.1,-0.1,1.1,1.1) ,
+        vjustvar = c(-0.5,1.2,-0.5,1.2))
+
+g.pdp = ggplot(data = pdp.df, aes(x = percentCoopPopular, y = meanDist)) + 
+  geom_tile(aes(fill = linksLost)) +
+  ggtitle("Links lost, adjusted for mean degree") +
+  scale_x_continuous("Percent of popular individuals that cooperated") +  
+  scale_y_continuous("Mean shortest path length") + 
+  scale_fill_continuous(type = "viridis") +
+  labs(fill="(links broken - links made)/max number of links") 
+
+g.pdp
+
+
+
+
+#partial dependence plot
+pdp = partial(rf, pred.var = c("coefGlobal","percentCoopPopular"), plot = FALSE)
+
+pdp.df = data.frame(
+  coefGlobal = pdp$coefGlobal,
+  percentCoopPopular = pdp$percentCoopPopular,
+  linksLost = pdp$yhat
+)
+
+annotations <- data.frame(
+        xpos = c(-Inf,-Inf,Inf,Inf),
+        ypos =  c(-Inf, Inf,-Inf,Inf),
+        annotateText = c("Random network","'Discrete'",
+                         "Small-world","Regular lattice"),
+        hjustvar = c(-0.1,-0.1,1.1,1.1) ,
+        vjustvar = c(-0.5,1.2,-0.5,1.2))
+
+g.pdp = ggplot(data = pdp.df, aes(x = percentCoopPopular, y = coefGlobal)) + 
+  geom_tile(aes(fill = linksLost)) +
+  ggtitle("Links lost, adjusted for mean degree") +
+  scale_x_continuous("Percent of popular individuals that cooperated") +  
+  scale_y_continuous("Global clustering coefficient") + 
+  scale_fill_continuous(type = "viridis") +
+  labs(fill="(links broken - links made)/max number of links") 
+
+g.pdp
+
+
+
+
+
+#regression
+reg = glm(linksLost ~ percentCoopPopular + meanDist + coefGlobal + meanDegree + factor(round), 
+      data = smallWorld, 
+      family = gaussian(link = "identity"))
+summary(reg)
+
+
+#次にやるとしたら、network characteristicsをmanipulateした時に、rewiringやisolationにどう影響するか。
+```
+

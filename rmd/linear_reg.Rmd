@@ -1,0 +1,222 @@
+---
+title: "Mediation analyses"
+author: "Ryunosuke Goto"
+date: "6/7/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+
+#to run RMD
+#library(rmarkdown)
+#rootdir <- system("git rev-parse --show-toplevel", intern=TRUE)[1]
+#rmarkdown::render(paste(rootdir,"rmd/linear_reg.Rmd", sep="/"))
+
+knitr::opts_chunk$set(warning=FALSE, message=TRUE, echo=TRUE)
+
+library(lfe)
+library(stargazer)
+library(knitr)
+library(plm)
+library(latex2exp)
+library(ggplot2)
+library(ggthemes)
+library(mvtnorm)
+library(kableExtra)
+library(data.table) 
+library(readxl)  
+library(dplyr)
+library(dotwhisker)
+library(latex2exp)
+library(parallel) 
+library(geepack)
+library(CMAverse)
+library(ggpubr)
+library(randomForest)
+library(mlbench)
+library(caret)
+library(e1071)
+library(missForest)
+library(gtsummary)
+library(knitr)
+library(gt)
+library(itertools)
+library(missForest)
+library(viridis)
+library(lmtest)
+
+detectCores()
+
+rootdir <- system("git rev-parse --show-toplevel", intern=TRUE)[1]
+
+source(paste(rootdir,"R/countyData.R",sep="/"))
+
+options(timeout=2000)
+sdf <- countyData(redo=FALSE) #set redo=TRUE to update
+
+```
+
+
+##Scatterplots of exposure, mediators, and outcome
+```{r scatterplots, cache=FALSE, warning=FALSE, message=FALSE, echo=FALSE, results='hide', fig.width=15, fig.height=15}
+#####scatterplots#####
+#create dataset 
+sdf_l <- subset(sdf, state %in% c("AL","AK","AZ","CA","CO","CT","DE",
+                              "FL","GA","HI","ID","IL","IN","DC", 
+                              "KS","KY","LA","ME","MD","MA","MI",
+                              "MN","MT","MS","MO","NV","NH","NJ",
+                              "NM","NY","NC","OH","OK","OR","PA",
+                              "RI","SC","TN","TX","VA","VT","WA",
+                              "WV","WI", #lockdown states
+                              "AR","IA","NE","ND","SD","UT","WY" #no lockdown states
+                              )) 
+
+#pctPoverty and deaths
+fig2  <-  ggpubr::ggscatter(data=sdf_l, x="pctPoverty",y="deaths_2021", fill="Black", color="Black",
+                            xlab = "Poverty rate (%)\n", ylab = "COVID-19 deaths per 100,000 in 2021",
+                           add = "reg.line", conf.int = TRUE, 
+                           cor.coef = TRUE, cor.method = "pearson",
+                           add.params = list(color = "grey45",fill = "grey45"),
+                           cor.coeff.args = list(method = "pearson", label.x = 25, label.y = 750, size = 5)
+                           ) 
+
+#pctPoverty and Series_Complete_Pop_Pct
+fig3  <-  ggpar(ggpubr::ggscatter(data=sdf_l, x="pctPoverty",y="Series_Complete_Pop_Pct", fill="Black", color="Black",
+                            xlab = "Poverty rate (%)\n", ylab = "Proportion fully vaccinated \nby December 31, 2021 (%)",
+                           add = "reg.line", conf.int = TRUE, 
+                           cor.coef = TRUE, cor.method = "pearson",
+                           add.params = list(color = "grey45",fill = "grey45"),
+                           cor.coeff.args = list(method = "pearson", label.x = 17, label.y = 13, size = 5)
+                           ) 
+                #, ylim = c(0,110)
+)
+
+#Series_Complete_Pop_Pct and deaths
+fig4  <-  ggpar(ggpubr::ggscatter(data=sdf_l, x="Series_Complete_Pop_Pct",y="deaths_2021", fill="Black", color="Black",
+                            xlab = "Proportion fully vaccinated \nby December 31, 2021 (%)", ylab = "COVID-19 deaths per 100,000 in 2021",
+                           add = "reg.line", conf.int = TRUE, 
+                           cor.coef = TRUE, cor.method = "pearson",
+                           add.params = list(color = "grey45",fill = "grey45"),
+                           cor.coeff.args = list(method = "pearson", label.x = 35, label.y = 750, size = 5)
+                           ) 
+                #, ylim = c(0,1500)
+)
+
+max(sdf_l$deaths_2021, na.rm=TRUE)  
+sdf_l[sdf_l$deaths_2021==max(sdf_l$deaths_2021, na.rm=TRUE),]$fips  
+min(sdf_l$deaths_2021, na.rm=TRUE)
+sdf_l[sdf_l$deaths_2021==min(sdf_l$deaths_2021, na.rm=TRUE),]$fips
+
+max(sdf_l$pctPoverty, na.rm=TRUE)
+sdf_l[sdf_l$pctPoverty==max(sdf_l$pctPoverty, na.rm=TRUE),]$fips
+min(sdf_l$pctPoverty, na.rm=TRUE)
+sdf_l[sdf_l$pctPoverty==min(sdf_l$pctPoverty, na.rm=TRUE),]$fips
+
+max(sdf_l$Series_Complete_Pop_Pct, na.rm=TRUE)
+sdf_l[sdf_l$Series_Complete_Pop_Pct==max(sdf_l$Series_Complete_Pop_Pct, na.rm=TRUE),]$fips
+min(sdf_l$Series_Complete_Pop_Pct, na.rm=TRUE)
+sdf_l[sdf_l$Series_Complete_Pop_Pct==min(sdf_l$Series_Complete_Pop_Pct, na.rm=TRUE),]$fips
+
+pdf(sprintf("%s/figures/scatterplots.pdf",rootdir), width=8, height=8)
+ggarrange(ggarrange(fig2, ncol = 1, labels = c("A")),        
+          ggarrange(fig4, fig3, ncol = 2, labels = c("B", "C")), 
+          nrow = 2                                   
+          ) 
+dev.off()
+
+ggarrange(ggarrange(fig2, ncol = 1, labels = c("A")),        
+          ggarrange(fig4, fig3, ncol = 2, labels = c("B", "C")), 
+          nrow = 2                                   
+          ) 
+
+```
+
+
+##Associations of exposure, mediators, and outcome
+```{r regressions, cache=FALSE, warning=FALSE, message=FALSE, echo=FALSE, results='hide'}
+#Variable selection
+set.seed(123)
+Y_2021 = "deaths_2021"
+E = "pctPoverty"
+M_vax = c(
+  "Series_Complete_Pop_Pct"
+)
+C = c("PropMale",
+      "PropAbove65",
+      "no.college.diploma",
+      "native",
+      "asian",
+      "black",
+      "white",
+      "hispanic",
+      "state"
+) 
+
+d = sdf[c("fips",Y_2021,E,M_vax,C)]
+
+
+createfmla <- function(yvar, xvars) {
+  rhs <- paste(xvars, collapse=" + ")
+  return(as.formula(paste(yvar, "~", rhs, sep=" ")))
+}
+createint <- function(Y,E,M) {
+  list <- NULL
+  for(i in 1:length(M)){
+    list <- c(list,paste(E,M[i], sep="*"))
+  }
+  rhs <- paste(list, collapse=" + ")
+  return(as.formula(paste(Y, "~", rhs, sep=" ")))
+}
+
+set.seed(123)
+
+
+#create dataset
+d_l <- subset(d, state %in% c("AL","AK","AZ","CA","CO","CT","DE",
+                              "FL","GA","HI","ID","IL","IN","DC", 
+                              "KS","KY","LA","ME","MD","MA","MI",
+                              "MN","MT","MS","MO","NV","NH","NJ",
+                              "NM","NY","NC","OH","OK","OR","PA",
+                              "RI","SC","TN","TX","VA","VT","WA",
+                              "WV","WI", #lockdown states
+                              "AR","IA","NE","ND","SD","UT","WY" #no lockdown states
+                              ))
+
+
+#impute with RF
+set.seed(123)
+d_l_mf <- d_l
+d_l_mf$state <- factor(d_l_mf$state)
+d_l_mf <- subset(d_l_mf, select=-c(fips))
+dimp <- missForest(xmis = d_l_mf, ntree=100, maxiter = 10, parallelize = 'no')
+# dimp$OOBerror
+# dimp$error
+d_l_rf<-cbind(d_l$fips, dimp$ximp)
+
+
+createfmla <- function(yvar, xvars) {
+  rhs <- paste(xvars, collapse=" + ")
+  return(as.formula(paste(yvar, "~", rhs, sep=" ")))
+}
+
+
+#Exposure-outcome association
+reg_ye_2021 = glm(createfmla(Y_2021, c(E)), family = gaussian(link="identity"), data = d_l_rf)
+
+
+
+#Normality of residuals
+##histogram f residuals
+plot(reg_ye_2021,2,xlab="Theoretical quantiles")
+##QQ plot: should look close to linear
+hist(reg_ye_2021$residuals,main="Histogram of residuals",xlab="Residuals")
+
+#homoskedasticity assumption
+##Plotting standardized residuals
+plot(reg_ye_2021,3)
+##BP test: tests the null hypothesis of presence of homoskedasticity
+lmtest::bptest(reg_ye_2021)
+
+
+```
+

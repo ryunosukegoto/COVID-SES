@@ -1,0 +1,936 @@
+---
+title: "SNA isolation"
+author: "Ryunosuke Goto"
+date: "10/2/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+
+#to run RMD
+#library(rmarkdown)
+#rootdir <- system("git rev-parse --show-toplevel", intern=TRUE)[1]
+#rmarkdown::render(paste(rootdir,"rmd/sna_isolation.Rmd", sep="/"))
+
+knitr::opts_chunk$set(warning=FALSE, message=FALSE, echo=TRUE)
+
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(arsenal)
+library(gridExtra)
+library(ggpubr)
+library(cowplot)
+library(grid)
+library(MASS)
+library(knitr)
+
+rootdir <- system("git rev-parse --show-toplevel", intern=TRUE)[1]
+
+source(paste(rootdir,"R/degree.R",sep="/"))
+
+options(timeout=2000)
+sampleList <- degree(redo=TRUE) #set redo=TRUE to update
+sample = sampleList[[1]]
+```
+
+
+##Clustering
+```{r clustering, cache=FALSE, echo=FALSE, results="hide", fig.width=8, fig.height=8}
+#####Dynamic time warping (time series clustering)#####
+#https://rstudio-pubs-static.s3.amazonaws.com/474160_0761428e8683401e941a92a4177254a4.html
+#here, we are using Dynamic Time Warping Barycenter Averaging (DBA), useful to extract the movement/shape
+#https://www.kaggle.com/code/izzettunc/introduction-to-time-series-clustering/notebook 
+library(TSclust)
+library(dtwclust)
+sample.clust = sample[c("zdegree.0","zdegree.1",
+                        "zdegree.2","zdegree.3",
+                        "zdegree.4","zdegree.5",
+                        "zdegree.6","zdegree.7",
+                        "zdegree.8","zdegree.9","zdegree.10")]
+
+cluster.eval <- tsclust(sample.clust, k = 2L:10L,
+                   type="partitional",
+                   distance = "dtw", centroid = "dba",
+                   seed = 10, trace = TRUE)
+
+cluster.eval <- data.frame(sapply(cluster.eval,cvi))
+colnames(cluster.eval) <- c(2:10)
+```
+
+```{r evaluating_clusters}
+#Silhouette (Sil), score function (SF), Calinski-Harabasz index (CH), Dunn index (D)
+#the local maximum is considered the appropriate number of clusters
+cluster.eval[c("Sil","SF","CH","D"),]
+
+#Davies-Bouldin index (DB), modified Davies-Bouldin index (DBstar), COP index (COP)
+#the local minimum is considered the appropriate number of clusters
+cluster.eval[c("DB","DBstar","COP"),]
+```
+
+```{r clustering_results, cache=FALSE, echo=FALSE, results="hide", fig.width=8, fig.height=8}
+#Based on the above evaluations, 
+#Five clusters is determined to be the appropriate number of clusters
+cluster <- tsclust(sample.clust, k = 5L,
+                   type="partitional",
+                   distance = "dtw", centroid = "dba",
+                   seed = 10, trace = TRUE)
+
+
+
+
+#####t-SNE#####
+#scatter plot of data points; T-sne is used to reduce the dimensionality to two
+library(dplyr)
+library(Rtsne)
+library(ggplot2)
+sample.tsne = sample[c("zdegree.0","zdegree.1",
+                       "zdegree.2","zdegree.3",
+                       "zdegree.4","zdegree.5",
+                       "zdegree.6","zdegree.7",
+                       "zdegree.8","zdegree.9","zdegree.10")]
+clust = cbind(
+  sample, 
+  cluster = cluster@cluster
+)
+colors = rainbow(length(unique(clust$cluster)))
+names(colors) = unique(clust$cluster)
+set.seed(10)
+tsne = Rtsne(sample.tsne, dims = 2, perplexity=30, verbose=TRUE, max_iter = 500, check_duplicates = FALSE)
+
+g <- ggplot(data.frame(tsne$Y),aes(x=tsne$Y[,1],y=tsne$Y[,2],color = as.factor(clust$cluster)))+
+  geom_point() +
+  #ggtitle("Five-cluster model") +
+  xlab("tSNE dimension 1") +
+  ylab("tSNE dimension 2") +
+  scale_color_discrete(name  ="Cluster") + 
+  theme_classic() +
+  theme(plot.title = element_text(hjust = 0.5)) 
+
+g
+
+
+
+#####investigate clusters######
+#convert to long format
+clust.res <- clust %>% 
+      gather(v, value, zdegree.0:behavior.10) %>% 
+      separate(v, c("col","round")) %>% 
+      arrange(ID) %>% 
+      spread(col, value)
+
+clust.res$round <- as.numeric(mapply(clust.res$round, FUN=function(t) gsub("zdegree.","",x=t)))
+
+clust.res$cluster <- factor(clust.res$cluster)
+
+clust.res = clust.res[c("ID","cluster","round","zdegree",
+                        "linksMadeByEgo","linksNotMadeByEgo","linksBrokenByEgo","linksNotBrokenByEgo",
+                        "linksMadeByAlter","linksNotMadeByAlter","linksBrokenByAlter","linksNotBrokenByAlter",
+                        "behavior"
+                        )]
+
+clust.res$round = factor(clust.res$round)
+clust.res$zdegree = as.numeric(clust.res$zdegree)
+clust.res$linksMadeByEgo = as.numeric(clust.res$linksMadeByEgo)
+clust.res$linksNotMadeByEgo = as.numeric(clust.res$linksNotMadeByEgo)
+clust.res$linksBrokenByEgo = as.numeric(clust.res$linksBrokenByEgo)
+clust.res$linksNotBrokenByEgo = as.numeric(clust.res$linksNotBrokenByEgo)
+clust.res$linksMadeByAlter = as.numeric(clust.res$linksMadeByAlter)
+clust.res$linksNotMadeByAlter = as.numeric(clust.res$linksNotMadeByAlter)
+clust.res$linksBrokenByAlter = as.numeric(clust.res$linksBrokenByAlter)
+clust.res$linksNotBrokenByAlter = as.numeric(clust.res$linksNotBrokenByAlter)
+clust.res$behavior = factor(clust.res$behavior)
+
+#create sample consisting only of cooperators for each round
+clust.c = clust[c("ID","visibleWealth","inequality","wealth",
+                "zdegree.0","zdegree.1","zdegree.2","zdegree.3","zdegree.4","zdegree.5","zdegree.6","zdegree.7","zdegree.8","zdegree.9","zdegree.10",
+                "cluster"
+                )]
+for(l in 1:10){
+  linksMadeByEgo = ifelse(clust[paste("behavior",l,sep=".")][[1]]=="C", clust[paste("linksMadeByEgo",l,sep=".")][[1]], NA)
+  clust.c = cbind(clust.c,linksMadeByEgo)
+  names(clust.c)[names(clust.c) == "linksMadeByEgo"] = paste("linksMadeByEgo",l,sep=".")
+  
+  linksNotMadeByEgo = ifelse(clust[paste("behavior",l,sep=".")][[1]]=="C", clust[paste("linksNotMadeByEgo",l,sep=".")][[1]], NA)
+  clust.c = cbind(clust.c,linksNotMadeByEgo)
+  names(clust.c)[names(clust.c) == "linksNotMadeByEgo"] = paste("linksNotMadeByEgo",l,sep=".")
+  
+  linksBrokenByEgo = ifelse(clust[paste("behavior",l,sep=".")][[1]]=="C", clust[paste("linksBrokenByEgo",l,sep=".")][[1]], NA)
+  clust.c = cbind(clust.c,linksBrokenByEgo)
+  names(clust.c)[names(clust.c) == "linksBrokenByEgo"] = paste("linksBrokenByEgo",l,sep=".")
+  
+  linksNotBrokenByEgo = ifelse(clust[paste("behavior",l,sep=".")][[1]]=="C", clust[paste("linksNotBrokenByEgo",l,sep=".")][[1]], NA)
+  clust.c = cbind(clust.c,linksNotBrokenByEgo)
+  names(clust.c)[names(clust.c) == "linksNotBrokenByEgo"] = paste("linksNotBrokenByEgo",l,sep=".")
+  
+  linksMadeByAlter = ifelse(clust[paste("behavior",l,sep=".")][[1]]=="C", clust[paste("linksMadeByAlter",l,sep=".")][[1]], NA)
+  clust.c = cbind(clust.c,linksMadeByAlter)
+  names(clust.c)[names(clust.c) == "linksMadeByAlter"] = paste("linksMadeByAlter",l,sep=".")
+  
+  linksNotMadeByAlter = ifelse(clust[paste("behavior",l,sep=".")][[1]]=="C", clust[paste("linksNotMadeByAlter",l,sep=".")][[1]], NA)
+  clust.c = cbind(clust.c,linksNotMadeByAlter)
+  names(clust.c)[names(clust.c) == "linksNotMadeByAlter"] = paste("linksNotMadeByAlter",l,sep=".")
+  
+  linksBrokenByAlter = ifelse(clust[paste("behavior",l,sep=".")][[1]]=="C", clust[paste("linksBrokenByAlter",l,sep=".")][[1]], NA)
+  clust.c = cbind(clust.c,linksBrokenByAlter)
+  names(clust.c)[names(clust.c) == "linksBrokenByAlter"] = paste("linksBrokenByAlter",l,sep=".")
+  
+  linksNotBrokenByAlter = ifelse(clust[paste("behavior",l,sep=".")][[1]]=="C", clust[paste("linksNotBrokenByAlter",l,sep=".")][[1]], NA)
+  clust.c = cbind(clust.c,linksNotBrokenByAlter)
+  names(clust.c)[names(clust.c) == "linksNotBrokenByAlter"] = paste("linksNotBrokenByAlter",l,sep=".")
+}
+
+
+#create sample consisting only of defectors for each round
+clust.d = clust[c("ID","visibleWealth","inequality","wealth",
+                "zdegree.0","zdegree.1","zdegree.2","zdegree.3","zdegree.4","zdegree.5","zdegree.6","zdegree.7","zdegree.8","zdegree.9","zdegree.10",
+                "cluster"
+                )]
+for(l in 1:10){
+  linksMadeByEgo = ifelse(clust[paste("behavior",l,sep=".")][[1]]=="D", clust[paste("linksMadeByEgo",l,sep=".")][[1]], NA)
+  clust.d = cbind(clust.d,linksMadeByEgo)
+  names(clust.d)[names(clust.d) == "linksMadeByEgo"] = paste("linksMadeByEgo",l,sep=".")
+  
+  linksNotMadeByEgo = ifelse(clust[paste("behavior",l,sep=".")][[1]]=="D", clust[paste("linksNotMadeByEgo",l,sep=".")][[1]], NA)
+  clust.d = cbind(clust.d,linksNotMadeByEgo)
+  names(clust.d)[names(clust.d) == "linksNotMadeByEgo"] = paste("linksNotMadeByEgo",l,sep=".")
+  
+  linksBrokenByEgo = ifelse(clust[paste("behavior",l,sep=".")][[1]]=="D", clust[paste("linksBrokenByEgo",l,sep=".")][[1]], NA)
+  clust.d = cbind(clust.d,linksBrokenByEgo)
+  names(clust.d)[names(clust.d) == "linksBrokenByEgo"] = paste("linksBrokenByEgo",l,sep=".")
+  
+  linksNotBrokenByEgo = ifelse(clust[paste("behavior",l,sep=".")][[1]]=="D", clust[paste("linksNotBrokenByEgo",l,sep=".")][[1]], NA)
+  clust.d = cbind(clust.d,linksNotBrokenByEgo)
+  names(clust.d)[names(clust.d) == "linksNotBrokenByEgo"] = paste("linksNotBrokenByEgo",l,sep=".")
+  
+  linksMadeByAlter = ifelse(clust[paste("behavior",l,sep=".")][[1]]=="D", clust[paste("linksMadeByAlter",l,sep=".")][[1]], NA)
+  clust.d = cbind(clust.d,linksMadeByAlter)
+  names(clust.d)[names(clust.d) == "linksMadeByAlter"] = paste("linksMadeByAlter",l,sep=".")
+  
+  linksNotMadeByAlter = ifelse(clust[paste("behavior",l,sep=".")][[1]]=="D", clust[paste("linksNotMadeByAlter",l,sep=".")][[1]], NA)
+  clust.d = cbind(clust.d,linksNotMadeByAlter)
+  names(clust.d)[names(clust.d) == "linksNotMadeByAlter"] = paste("linksNotMadeByAlter",l,sep=".")
+  
+  linksBrokenByAlter = ifelse(clust[paste("behavior",l,sep=".")][[1]]=="D", clust[paste("linksBrokenByAlter",l,sep=".")][[1]], NA)
+  clust.d = cbind(clust.d,linksBrokenByAlter)
+  names(clust.d)[names(clust.d) == "linksBrokenByAlter"] = paste("linksBrokenByAlter",l,sep=".")
+  
+  linksNotBrokenByAlter = ifelse(clust[paste("behavior",l,sep=".")][[1]]=="D", clust[paste("linksNotBrokenByAlter",l,sep=".")][[1]], NA)
+  clust.d = cbind(clust.d,linksNotBrokenByAlter)
+  names(clust.d)[names(clust.d) == "linksNotBrokenByAlter"] = paste("linksNotBrokenByAlter",l,sep=".")
+}
+
+#plot each cluster and the time series that belong to each cluster
+plot(cluster, type = "sc")
+
+#plot means and CIs
+sum_clust <- clust.res %>% 
+  group_by(round, cluster) %>%
+  summarise(mean = mean(zdegree),
+            ci   = 1.96 * sd(zdegree)/sqrt(n()))
+pd <- position_dodge(width = 0.1)
+sum_clust %>%
+  ggplot(aes(x = round, y = mean, group = cluster)) +
+  geom_line(aes(color = cluster), position = pd) +
+  geom_errorbar(aes(ymin = mean - ci, ymax = mean + ci, color=cluster),
+                width = .1, position = pd) +
+  theme_bw() +
+  geom_point(size = 4, position = pd, aes(color=cluster)) +
+  labs(
+    title = "Trajectories of degrees",
+    x = "Round",
+    y = "Degree",
+    color = NULL,
+    linetype = NULL) +
+  theme(plot.title = element_text(hjust = 0.5))
+
+```
+
+
+##Characteristics of each cluster
+```{r, results="asis", echo=FALSE}
+#characteristics of each cluster
+table.clust <- tableby(cluster ~ ., 
+                  data = subset(clust, select = -c(ID,gameID,degree.0,degree.1,degree.2,degree.3,degree.4,degree.5,degree.6,degree.7,degree.8,degree.9,degree.10)), 
+                  numeric.test="kwt", cat.test="chisq",
+                  digits.p=3, digits.pct=1, digits=2)
+res.clust = summary(table.clust, title = "Characteristics of each cluster")
+res.clust
+
+#characteristics of each cluster, cooperators for each round
+table.clust.c <- tableby(cluster ~ ., 
+                  data = subset(clust.c, select = -c(ID)), 
+                  numeric.test="kwt", cat.test="chisq",
+                  digits.p=3, digits.pct=1, digits=2)
+res.clust.c = summary(table.clust.c, title = "Characteristics of each cluster, cooperators for each round")
+res.clust.c
+
+#characteristics of each cluster, defectors for each round
+table.clust.d <- tableby(cluster ~ ., 
+                  data = subset(clust.d, select = -c(ID)), 
+                  numeric.test="kwt", cat.test="chisq",
+                  digits.p=3, digits.pct=1, digits=2)
+res.clust.d = summary(table.clust.d, title = "Characteristics of each cluster, defectors for each round")
+res.clust.d
+
+
+#Links made or broken during each round for each cluster: pie charts
+#About 30% of possible links are chosen in each round, and for each link the participant(s) choose to make, break, not make, or not break the link
+#Decisions made by ego
+df.piechart.ego = aggregate(cbind(linksMadeByEgo,linksNotMadeByEgo,linksBrokenByEgo,linksNotBrokenByEgo) ~ cluster + round, data=clust.res, FUN=sum, na.rm=TRUE)
+
+df.piechart.ego <- df.piechart.ego %>% 
+      gather(link, count, linksMadeByEgo:linksNotBrokenByEgo)
+ggplot(data=df.piechart.ego, aes(x="", y=count, fill=link))+
+  geom_bar(stat="identity", width=1, color="white", position = "fill") + 
+  coord_polar("y", start = 0) +
+  theme_bw() +
+  facet_grid(cluster~round) +
+  theme(axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        panel.grid  = element_blank()) +
+  labs(title="Types of links per round", x="Cluster", y="Round") + 
+  theme(plot.title = element_text(hjust = 0.5)) 
+
+#Decisions made by alter
+df.piechart.alter = aggregate(cbind(linksMadeByAlter,linksNotMadeByAlter,linksBrokenByAlter,linksNotBrokenByAlter) ~ cluster + round, data=clust.res, FUN=sum, na.rm=TRUE)
+
+df.piechart.alter <- df.piechart.alter %>% 
+      gather(link, count, linksMadeByAlter:linksNotBrokenByAlter)
+ggplot(data=df.piechart.alter, aes(x="", y=count, fill=link))+
+  geom_bar(stat="identity", width=1, color="white", position = "fill") + 
+  coord_polar("y", start = 0) +
+  theme_bw() +
+  facet_grid(cluster~round) +
+  theme(axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        panel.grid  = element_blank()) +
+  labs(title="Types of links per round", x="Cluster", y="Round") + 
+  theme(plot.title = element_text(hjust = 0.5)) 
+
+
+#Decisions made by ego, ego is cooperator
+df.piechart.ego = aggregate(cbind(linksMadeByEgo,linksNotMadeByEgo,linksBrokenByEgo,linksNotBrokenByEgo) ~ cluster + round, data=clust.res[clust.res$behavior=="C",], FUN=sum, na.rm=TRUE)
+
+df.piechart.ego <- df.piechart.ego %>% 
+      gather(link, count, linksMadeByEgo:linksNotBrokenByEgo)
+ggplot(data=df.piechart.ego, aes(x="", y=count, fill=link))+
+  geom_bar(stat="identity", width=1, color="white", position = "fill") + 
+  coord_polar("y", start = 0) +
+  theme_bw() +
+  facet_grid(cluster~round) +
+  theme(axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        panel.grid  = element_blank()) +
+  labs(title="Types of links per round, ego is cooperator", x="Cluster", y="Round") + 
+  theme(plot.title = element_text(hjust = 0.5)) 
+
+#Decisions made by ego, ego is defector
+df.piechart.ego = aggregate(cbind(linksMadeByEgo,linksNotMadeByEgo,linksBrokenByEgo,linksNotBrokenByEgo) ~ cluster + round, data=clust.res[clust.res$behavior=="D",], FUN=sum, na.rm=TRUE)
+
+df.piechart.ego <- df.piechart.ego %>% 
+      gather(link, count, linksMadeByEgo:linksNotBrokenByEgo)
+ggplot(data=df.piechart.ego, aes(x="", y=count, fill=link))+
+  geom_bar(stat="identity", width=1, color="white", position = "fill") + 
+  coord_polar("y", start = 0) +
+  theme_bw() +
+  facet_grid(cluster~round) +
+  theme(axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        panel.grid  = element_blank()) +
+  labs(title="Types of links per round, ego is defector", x="Cluster", y="Round") + 
+  theme(plot.title = element_text(hjust = 0.5)) 
+
+#Decisions made by alter, ego is cooperator
+df.piechart.alter = aggregate(cbind(linksMadeByAlter,linksNotMadeByAlter,linksBrokenByAlter,linksNotBrokenByAlter) ~ cluster + round, data=clust.res[clust.res$behavior=="C",], FUN=sum, na.rm=TRUE)
+
+df.piechart.alter <- df.piechart.alter %>% 
+      gather(link, count, linksMadeByAlter:linksNotBrokenByAlter)
+ggplot(data=df.piechart.alter, aes(x="", y=count, fill=link))+
+  geom_bar(stat="identity", width=1, color="white", position = "fill") + 
+  coord_polar("y", start = 0) +
+  theme_bw() +
+  facet_grid(cluster~round) +
+  theme(axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        panel.grid  = element_blank()) +
+  labs(title="Types of links per round, ego is cooperator", x="Cluster", y="Round") + 
+  theme(plot.title = element_text(hjust = 0.5)) 
+
+#Decisions made by alter, ego is defector
+df.piechart.alter = aggregate(cbind(linksMadeByAlter,linksNotMadeByAlter,linksBrokenByAlter,linksNotBrokenByAlter) ~ cluster + round, data=clust.res[clust.res$behavior=="D",], FUN=sum, na.rm=TRUE)
+
+df.piechart.alter <- df.piechart.alter %>% 
+      gather(link, count, linksMadeByAlter:linksNotBrokenByAlter)
+ggplot(data=df.piechart.alter, aes(x="", y=count, fill=link))+
+  geom_bar(stat="identity", width=1, color="white", position = "fill") + 
+  coord_polar("y", start = 0) +
+  theme_bw() +
+  facet_grid(cluster~round) +
+  theme(axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        panel.grid  = element_blank()) +
+  labs(title="Types of links per round, ego is defector", x="Cluster", y="Round") + 
+  theme(plot.title = element_text(hjust = 0.5)) 
+
+```
+
+#Characteristics of isolation cluster compared to others
+```{r, results="asis", echo=FALSE}
+#Define isolation cluster
+isolationCluster = 2
+clust$isolationCluster = ifelse(clust$cluster==isolationCluster,1,0)
+clust.c$isolationCluster = ifelse(clust.c$cluster==isolationCluster,1,0)
+clust.d$isolationCluster = ifelse(clust.d$cluster==isolationCluster,1,0)
+clust.res$isolationCluster = ifelse(clust.res$cluster==isolationCluster,1,0)
+
+
+#characteristics of isolation cluster compared to others
+table.clust <- tableby(isolationCluster ~ ., 
+                  data = subset(clust, select = -c(ID,gameID,degree.0,degree.1,degree.2,degree.3,degree.4,degree.5,degree.6,degree.7,degree.8,degree.9,degree.10)), 
+                  numeric.test="kwt", cat.test="chisq",
+                  digits.p=3, digits.pct=1, digits=2)
+res.clust = summary(table.clust, title = "Characteristics of isolation cluster compared to others")
+res.clust
+
+#characteristics of each cluster, cooperators for each round
+table.clust.c <- tableby(isolationCluster ~ ., 
+                  data = subset(clust.c, select = -c(ID)), 
+                  numeric.test="kwt", cat.test="chisq",
+                  digits.p=3, digits.pct=1, digits=2)
+res.clust.c = summary(table.clust.c, title = "Characteristics of each cluster, cooperators for each round")
+res.clust.c
+
+#characteristics of each cluster, defectors for each round
+table.clust.d <- tableby(isolationCluster ~ ., 
+                  data = subset(clust.d, select = -c(ID)), 
+                  numeric.test="kwt", cat.test="chisq",
+                  digits.p=3, digits.pct=1, digits=2)
+res.clust.d = summary(table.clust.d, title = "Characteristics of each cluster, defectors for each round")
+res.clust.d
+
+#Links made or broken during each round for isolation cluster vs others: pie charts
+#About 30% of possible links are chosen in each round, and for each link the participant(s) choose to make, break, not make, or not break the link
+#Decisions made by ego
+df.piechart.ego = aggregate(cbind(linksMadeByEgo,linksNotMadeByEgo,linksBrokenByEgo,linksNotBrokenByEgo) ~ isolationCluster + round, data=clust.res, FUN=sum, na.rm=TRUE)
+
+df.piechart.ego <- df.piechart.ego %>% 
+      gather(link, count, linksMadeByEgo:linksNotBrokenByEgo)
+ggplot(data=df.piechart.ego, aes(x="", y=count, fill=link))+
+  geom_bar(stat="identity", width=1, color="white", position = "fill") + 
+  coord_polar("y", start = 0) +
+  theme_bw() +
+  facet_grid(isolationCluster~round) +
+  theme(axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        panel.grid  = element_blank()) +
+  labs(title="Types of links per round", x="Isolation cluster", y="Round") + 
+  theme(plot.title = element_text(hjust = 0.5)) 
+
+#Decisions made by alter
+df.piechart.alter = aggregate(cbind(linksMadeByAlter,linksNotMadeByAlter,linksBrokenByAlter,linksNotBrokenByAlter) ~ isolationCluster + round, data=clust.res, FUN=sum, na.rm=TRUE)
+
+df.piechart.alter <- df.piechart.alter %>% 
+      gather(link, count, linksMadeByAlter:linksNotBrokenByAlter)
+ggplot(data=df.piechart.alter, aes(x="", y=count, fill=link))+
+  geom_bar(stat="identity", width=1, color="white", position = "fill") + 
+  coord_polar("y", start = 0) +
+  theme_bw() +
+  facet_grid(isolationCluster~round) +
+  theme(axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        panel.grid  = element_blank()) +
+  labs(title="Types of links per round", x="Isolation cluster", y="Round") + 
+  theme(plot.title = element_text(hjust = 0.5)) 
+
+#Decisions made by ego, ego is cooperator
+df.piechart.ego = aggregate(cbind(linksMadeByEgo,linksNotMadeByEgo,linksBrokenByEgo,linksNotBrokenByEgo) ~ isolationCluster + round, data=clust.res[clust.res$behavior=="C",], FUN=sum, na.rm=TRUE)
+
+df.piechart.ego <- df.piechart.ego %>% 
+      gather(link, count, linksMadeByEgo:linksNotBrokenByEgo)
+ggplot(data=df.piechart.ego, aes(x="", y=count, fill=link))+
+  geom_bar(stat="identity", width=1, color="white", position = "fill") + 
+  coord_polar("y", start = 0) +
+  theme_bw() +
+  facet_grid(isolationCluster~round) +
+  theme(axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        panel.grid  = element_blank()) +
+  labs(title="Types of links per round, ego is cooperator", x="Isolation cluster", y="Round") + 
+  theme(plot.title = element_text(hjust = 0.5)) 
+ 
+#Decisions made by ego, ego is defector
+df.piechart.ego = aggregate(cbind(linksMadeByEgo,linksNotMadeByEgo,linksBrokenByEgo,linksNotBrokenByEgo) ~ isolationCluster + round, data=clust.res[clust.res$behavior=="D",], FUN=sum, na.rm=TRUE)
+
+df.piechart.ego <- df.piechart.ego %>% 
+      gather(link, count, linksMadeByEgo:linksNotBrokenByEgo)
+ggplot(data=df.piechart.ego, aes(x="", y=count, fill=link))+
+  geom_bar(stat="identity", width=1, color="white", position = "fill") + 
+  coord_polar("y", start = 0) +
+  theme_bw() +
+  facet_grid(isolationCluster~round) +
+  theme(axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        panel.grid  = element_blank()) +
+  labs(title="Types of links per round, ego is defector", x="Isolation cluster", y="Round") + 
+  theme(plot.title = element_text(hjust = 0.5)) 
+
+#Decisions made by alter, ego is cooperator
+df.piechart.alter = aggregate(cbind(linksMadeByAlter,linksNotMadeByAlter,linksBrokenByAlter,linksNotBrokenByAlter) ~ isolationCluster + round, data=clust.res[clust.res$behavior=="C",], FUN=sum, na.rm=TRUE)
+
+df.piechart.alter <- df.piechart.alter %>% 
+      gather(link, count, linksMadeByAlter:linksNotBrokenByAlter)
+ggplot(data=df.piechart.alter, aes(x="", y=count, fill=link))+
+  geom_bar(stat="identity", width=1, color="white", position = "fill") + 
+  coord_polar("y", start = 0) +
+  theme_bw() +
+  facet_grid(isolationCluster~round) +
+  theme(axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        panel.grid  = element_blank()) +
+  labs(title="Types of links per round, ego is cooperator", x="Isolation cluster", y="Round") + 
+  theme(plot.title = element_text(hjust = 0.5)) 
+
+#Decisions made by alter, ego is defector
+df.piechart.alter = aggregate(cbind(linksMadeByAlter,linksNotMadeByAlter,linksBrokenByAlter,linksNotBrokenByAlter) ~ isolationCluster + round, data=clust.res[clust.res$behavior=="D",], FUN=sum, na.rm=TRUE)
+
+df.piechart.alter <- df.piechart.alter %>% 
+      gather(link, count, linksMadeByAlter:linksNotBrokenByAlter)
+ggplot(data=df.piechart.alter, aes(x="", y=count, fill=link))+
+  geom_bar(stat="identity", width=1, color="white", position = "fill") + 
+  coord_polar("y", start = 0) +
+  theme_bw() +
+  facet_grid(isolationCluster~round) +
+  theme(axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        panel.grid  = element_blank()) +
+  labs(title="Types of links per round, ego is defector", x="Isolation cluster", y="Round") + 
+  theme(plot.title = element_text(hjust = 0.5)) 
+```
+
+#Characteristics of isolation cluster (cluster 2) compared to cluster 3, which starts with the same initial degree but does not end up in isolation
+```{r, results="asis", echo=FALSE}
+#Define isolation cluster
+clust <- clust %>% 
+  mutate(isolation.2v3 = 
+           case_when(
+             clust$cluster==2 ~ "isolation",
+             clust$cluster==3 ~ "no isolation"
+           )
+         )
+clust.c <- clust.c %>% 
+  mutate(isolation.2v3 = 
+           case_when(
+             clust$cluster==2 ~ "isolation",
+             clust$cluster==3 ~ "no isolation"
+           )
+         )
+clust.d <- clust.d %>% 
+  mutate(isolation.2v3 = 
+           case_when(
+             clust$cluster==2 ~ "isolation",
+             clust$cluster==3 ~ "no isolation"
+           )
+         )
+clust.res <- clust.res %>% 
+  mutate(isolation.2v3 = 
+           case_when(
+             clust.res$cluster==2 ~ "isolation",
+             clust.res$cluster==3 ~ "no isolation"
+           )
+         )
+
+#characteristics of isolation cluster compared to others
+table.clust <- tableby(isolation.2v3 ~ ., 
+                  data = subset(clust, select = -c(ID,gameID,degree.0,degree.1,degree.2,degree.3,degree.4,degree.5,degree.6,degree.7,degree.8,degree.9,degree.10)), 
+                  numeric.test="kwt", cat.test="chisq",
+                  digits.p=3, digits.pct=1, digits=2)
+res.clust = summary(table.clust, title = "Characteristics of isolation cluster (cluster 2) compared to cluster 3, which starts with the same initial degree but does not end up in isolation")
+res.clust
+
+#characteristics of each cluster, cooperators for each round
+table.clust.c <- tableby(isolation.2v3 ~ ., 
+                  data = subset(clust.c, select = -c(ID)), 
+                  numeric.test="kwt", cat.test="chisq",
+                  digits.p=3, digits.pct=1, digits=2)
+res.clust.c = summary(table.clust.c, title = "Characteristics of each cluster, cooperators for each round")
+res.clust.c
+
+#characteristics of each cluster, defectors for each round
+table.clust.d <- tableby(isolation.2v3 ~ ., 
+                  data = subset(clust.d, select = -c(ID)), 
+                  numeric.test="kwt", cat.test="chisq",
+                  digits.p=3, digits.pct=1, digits=2)
+res.clust.d = summary(table.clust.d, title = "Characteristics of each cluster, defectors for each round")
+res.clust.d
+
+#Links made or broken during each round for isolation cluster vs others: pie charts
+#About 30% of possible links are chosen in each round, and for each link the participant(s) choose to make, break, not make, or not break the link
+#Decisions made by ego
+df.piechart.ego = aggregate(cbind(linksMadeByEgo,linksNotMadeByEgo,linksBrokenByEgo,linksNotBrokenByEgo) ~ isolation.2v3 + round, data=clust.res, FUN=sum, na.rm=TRUE)
+
+df.piechart.ego <- df.piechart.ego %>% 
+      gather(link, count, linksMadeByEgo:linksNotBrokenByEgo)
+ggplot(data=df.piechart.ego, aes(x="", y=count, fill=link))+
+  geom_bar(stat="identity", width=1, color="white", position = "fill") + 
+  coord_polar("y", start = 0) +
+  theme_bw() +
+  facet_grid(isolation.2v3~round) +
+  theme(axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        panel.grid  = element_blank()) +
+  labs(title="Types of links per round", x="Isolation cluster", y="Round") + 
+  theme(plot.title = element_text(hjust = 0.5)) 
+
+#Decisions made by alter
+df.piechart.alter = aggregate(cbind(linksMadeByAlter,linksNotMadeByAlter,linksBrokenByAlter,linksNotBrokenByAlter) ~ isolation.2v3 + round, data=clust.res, FUN=sum, na.rm=TRUE)
+
+df.piechart.alter <- df.piechart.alter %>% 
+      gather(link, count, linksMadeByAlter:linksNotBrokenByAlter)
+ggplot(data=df.piechart.alter, aes(x="", y=count, fill=link))+
+  geom_bar(stat="identity", width=1, color="white", position = "fill") + 
+  coord_polar("y", start = 0) +
+  theme_bw() +
+  facet_grid(isolation.2v3~round) +
+  theme(axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        panel.grid  = element_blank()) +
+  labs(title="Types of links per round", x="Isolation cluster", y="Round") + 
+  theme(plot.title = element_text(hjust = 0.5)) 
+
+
+#Decisions made by ego, ego is cooperator
+df.piechart.ego = aggregate(cbind(linksMadeByEgo,linksNotMadeByEgo,linksBrokenByEgo,linksNotBrokenByEgo) ~ isolation.2v3 + round, data=clust.res[clust.res$behavior=="C",], FUN=sum, na.rm=TRUE)
+
+df.piechart.ego <- df.piechart.ego %>% 
+      gather(link, count, linksMadeByEgo:linksNotBrokenByEgo)
+ggplot(data=df.piechart.ego, aes(x="", y=count, fill=link))+
+  geom_bar(stat="identity", width=1, color="white", position = "fill") + 
+  coord_polar("y", start = 0) +
+  theme_bw() +
+  facet_grid(isolation.2v3~round) +
+  theme(axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        panel.grid  = element_blank()) +
+  labs(title="Types of links per round, ego is cooperator", x="Isolation cluster", y="Round") + 
+  theme(plot.title = element_text(hjust = 0.5)) 
+
+#Decisions made by ego, ego is defector
+df.piechart.ego = aggregate(cbind(linksMadeByEgo,linksNotMadeByEgo,linksBrokenByEgo,linksNotBrokenByEgo) ~ isolation.2v3 + round, data=clust.res[clust.res$behavior=="D",], FUN=sum, na.rm=TRUE)
+
+df.piechart.ego <- df.piechart.ego %>% 
+      gather(link, count, linksMadeByEgo:linksNotBrokenByEgo)
+ggplot(data=df.piechart.ego, aes(x="", y=count, fill=link))+
+  geom_bar(stat="identity", width=1, color="white", position = "fill") + 
+  coord_polar("y", start = 0) +
+  theme_bw() +
+  facet_grid(isolation.2v3~round) +
+  theme(axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        panel.grid  = element_blank()) +
+  labs(title="Types of links per round, ego is defector", x="Isolation cluster", y="Round") + 
+  theme(plot.title = element_text(hjust = 0.5)) 
+
+#Decisions made by alter, ego is cooperator
+df.piechart.alter = aggregate(cbind(linksMadeByAlter,linksNotMadeByAlter,linksBrokenByAlter,linksNotBrokenByAlter) ~ isolation.2v3 + round, data=clust.res[clust.res$behavior=="C",], FUN=sum, na.rm=TRUE)
+
+df.piechart.alter <- df.piechart.alter %>% 
+      gather(link, count, linksMadeByAlter:linksNotBrokenByAlter)
+ggplot(data=df.piechart.alter, aes(x="", y=count, fill=link))+
+  geom_bar(stat="identity", width=1, color="white", position = "fill") + 
+  coord_polar("y", start = 0) +
+  theme_bw() +
+  facet_grid(isolation.2v3~round) +
+  theme(axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        panel.grid  = element_blank()) +
+  labs(title="Types of links per round, ego is cooperator", x="Isolation cluster", y="Round") + 
+  theme(plot.title = element_text(hjust = 0.5)) 
+
+#Decisions made by alter, ego is defector
+df.piechart.alter = aggregate(cbind(linksMadeByAlter,linksNotMadeByAlter,linksBrokenByAlter,linksNotBrokenByAlter) ~ isolation.2v3 + round, data=clust.res[clust.res$behavior=="D",], FUN=sum, na.rm=TRUE)
+
+df.piechart.alter <- df.piechart.alter %>% 
+      gather(link, count, linksMadeByAlter:linksNotBrokenByAlter)
+ggplot(data=df.piechart.alter, aes(x="", y=count, fill=link))+
+  geom_bar(stat="identity", width=1, color="white", position = "fill") + 
+  coord_polar("y", start = 0) +
+  theme_bw() +
+  facet_grid(isolation.2v3~round) +
+  theme(axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        panel.grid  = element_blank()) +
+  labs(title="Types of links per round, ego is defector", x="Isolation cluster", y="Round") + 
+  theme(plot.title = element_text(hjust = 0.5)) 
+```
+
+
+#Characteristics of individuals who end up in isolation, defined as degree=0 in round 6 or later
+```{r, results="asis", echo=FALSE}
+#Define isolation cluster
+clust$isolated = ifelse(clust$zdegree.6==0 | clust$zdegree.7==0 | clust$zdegree.8==0 | clust$zdegree.9==0 | clust$zdegree.10==0,
+                        1,0)
+clust.c$isolated = ifelse(clust.c$zdegree.6==0 | clust.c$zdegree.7==0 | clust.c$zdegree.8==0 | clust.c$zdegree.9==0 | clust.c$zdegree.10==0,
+                        1,0)
+clust.d$isolated = ifelse(clust.d$zdegree.6==0 | clust.d$zdegree.7==0 | clust.d$zdegree.8==0 | clust.d$zdegree.9==0 | clust.d$zdegree.10==0,
+                        1,0)
+clust.res = merge(clust.res,clust[c("ID","isolated")],by="ID",all.x=TRUE)
+
+
+#characteristics of isolated individuals compared to others
+table.clust <- tableby(isolated ~ ., 
+                  data = subset(clust, select = -c(ID,gameID,degree.0,degree.1,degree.2,degree.3,degree.4,degree.5,degree.6,degree.7,degree.8,degree.9,degree.10)), 
+                  numeric.test="kwt", cat.test="chisq",
+                  digits.p=3, digits.pct=1, digits=2)
+res.clust = summary(table.clust, title = "Characteristics of individuals who end up in isolation, defined as degree=0 in round 6 or later")
+res.clust
+
+#characteristics of each cluster, cooperators for each round
+table.clust.c <- tableby(isolated ~ ., 
+                  data = subset(clust.c, select = -c(ID)), 
+                  numeric.test="kwt", cat.test="chisq",
+                  digits.p=3, digits.pct=1, digits=2)
+res.clust.c = summary(table.clust.c, title = "Characteristics of each cluster, cooperators for each round")
+res.clust.c
+
+#characteristics of each cluster, defectors for each round
+table.clust.d <- tableby(isolated ~ ., 
+                  data = subset(clust.d, select = -c(ID)), 
+                  numeric.test="kwt", cat.test="chisq",
+                  digits.p=3, digits.pct=1, digits=2)
+res.clust.d = summary(table.clust.d, title = "Characteristics of each cluster, defectors for each round")
+res.clust.d
+
+#Links made or broken during each round for isolation cluster vs others: pie charts
+#About 30% of possible links are chosen in each round, and for each link the participant(s) choose to make, break, not make, or not break the link
+#Decisions made by ego
+df.piechart.ego = aggregate(cbind(linksMadeByEgo,linksNotMadeByEgo,linksBrokenByEgo,linksNotBrokenByEgo) ~ isolated + round, data=clust.res, FUN=sum, na.rm=TRUE)
+
+df.piechart.ego <- df.piechart.ego %>% 
+      gather(link, count, linksMadeByEgo:linksNotBrokenByEgo)
+ggplot(data=df.piechart.ego, aes(x="", y=count, fill=link))+
+  geom_bar(stat="identity", width=1, color="white", position = "fill") + 
+  coord_polar("y", start = 0) +
+  theme_bw() +
+  facet_grid(isolated~round) +
+  theme(axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        panel.grid  = element_blank()) +
+  labs(title="Types of links per round", x="Isolated or not", y="Round") + 
+  theme(plot.title = element_text(hjust = 0.5)) 
+
+#Decisions made by alter
+df.piechart.alter = aggregate(cbind(linksMadeByAlter,linksNotMadeByAlter,linksBrokenByAlter,linksNotBrokenByAlter) ~ isolated + round, data=clust.res, FUN=sum, na.rm=TRUE)
+
+df.piechart.alter <- df.piechart.alter %>% 
+      gather(link, count, linksMadeByAlter:linksNotBrokenByAlter)
+ggplot(data=df.piechart.alter, aes(x="", y=count, fill=link))+
+  geom_bar(stat="identity", width=1, color="white", position = "fill") + 
+  coord_polar("y", start = 0) +
+  theme_bw() +
+  facet_grid(isolated~round) +
+  theme(axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        panel.grid  = element_blank()) +
+  labs(title="Types of links per round", x="Isolated or not", y="Round") + 
+  theme(plot.title = element_text(hjust = 0.5)) 
+
+
+
+
+#Decisions made by ego, ego is cooperator
+df.piechart.ego = aggregate(cbind(linksMadeByEgo,linksNotMadeByEgo,linksBrokenByEgo,linksNotBrokenByEgo) ~ isolated + round, data=clust.res[clust.res$behavior=="C",], FUN=sum, na.rm=TRUE)
+
+df.piechart.ego <- df.piechart.ego %>% 
+      gather(link, count, linksMadeByEgo:linksNotBrokenByEgo)
+ggplot(data=df.piechart.ego, aes(x="", y=count, fill=link))+
+  geom_bar(stat="identity", width=1, color="white", position = "fill") + 
+  coord_polar("y", start = 0) +
+  theme_bw() +
+  facet_grid(isolated~round) +
+  theme(axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        panel.grid  = element_blank()) +
+  labs(title="Types of links per round, ego is cooperator", x="Isolated or not", y="Round") + 
+  theme(plot.title = element_text(hjust = 0.5)) 
+
+#Decisions made by ego, ego is defector
+df.piechart.ego = aggregate(cbind(linksMadeByEgo,linksNotMadeByEgo,linksBrokenByEgo,linksNotBrokenByEgo) ~ isolated + round, data=clust.res[clust.res$behavior=="D",], FUN=sum, na.rm=TRUE)
+
+df.piechart.ego <- df.piechart.ego %>% 
+      gather(link, count, linksMadeByEgo:linksNotBrokenByEgo)
+ggplot(data=df.piechart.ego, aes(x="", y=count, fill=link))+
+  geom_bar(stat="identity", width=1, color="white", position = "fill") + 
+  coord_polar("y", start = 0) +
+  theme_bw() +
+  facet_grid(isolated~round) +
+  theme(axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        panel.grid  = element_blank()) +
+  labs(title="Types of links per round, ego is defector", x="Isolated or not", y="Round") + 
+  theme(plot.title = element_text(hjust = 0.5)) 
+
+#Decisions made by alter, ego is cooperator
+df.piechart.alter = aggregate(cbind(linksMadeByAlter,linksNotMadeByAlter,linksBrokenByAlter,linksNotBrokenByAlter) ~ isolated + round, data=clust.res[clust.res$behavior=="C",], FUN=sum, na.rm=TRUE)
+
+df.piechart.alter <- df.piechart.alter %>% 
+      gather(link, count, linksMadeByAlter:linksNotBrokenByAlter)
+ggplot(data=df.piechart.alter, aes(x="", y=count, fill=link))+
+  geom_bar(stat="identity", width=1, color="white", position = "fill") + 
+  coord_polar("y", start = 0) +
+  theme_bw() +
+  facet_grid(isolated~round) +
+  theme(axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        panel.grid  = element_blank()) +
+  labs(title="Types of links per round, ego is cooperator", x="Isolated or not", y="Round") + 
+  theme(plot.title = element_text(hjust = 0.5)) 
+
+#Decisions made by alter, ego is defector
+df.piechart.alter = aggregate(cbind(linksMadeByAlter,linksNotMadeByAlter,linksBrokenByAlter,linksNotBrokenByAlter) ~ isolated + round, data=clust.res[clust.res$behavior=="D",], FUN=sum, na.rm=TRUE)
+
+df.piechart.alter <- df.piechart.alter %>% 
+      gather(link, count, linksMadeByAlter:linksNotBrokenByAlter)
+ggplot(data=df.piechart.alter, aes(x="", y=count, fill=link))+
+  geom_bar(stat="identity", width=1, color="white", position = "fill") + 
+  coord_polar("y", start = 0) +
+  theme_bw() +
+  facet_grid(isolated~round) +
+  theme(axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        panel.grid  = element_blank()) +
+  labs(title="Types of links per round, ego is defector", x="Isolated or not", y="Round") + 
+  theme(plot.title = element_text(hjust = 0.5)) 
+```
+
+
+###What causes social isolation?
+```{r regressions, echo=FALSE, results="hide"}
+#Defining the outcome: first, we define social isolation based on clustering results
+#full sample
+reg.isolationCluster = glm(isolationCluster ~ degree.0, 
+      data = clust, 
+      family = binomial(link = "logit"))
+alpha <- 0.05
+x.isolationCluster <- summary(reg.isolationCluster)
+y.isolationCluster <- confint(reg.isolationCluster, level=1-alpha)
+coef.isolationCluster <- x.isolationCluster$coefficients[,1]
+LowerCL.isolationCluster <- y.isolationCluster[,1]
+UpperCL.isolationCluster <- y.isolationCluster[,2]
+coef.isolationCluster <- x.isolationCluster$coefficients[,1]
+p.isolationCluster <-x.isolationCluster$coefficients[,4]
+z.isolationCluster <- cbind(coef.isolationCluster, LowerCL.isolationCluster, UpperCL.isolationCluster, p.isolationCluster)
+z.isolationCluster
+summary(reg.isolationCluster)
+
+#with initial inequality
+reg.isolationCluster.IE = glm(isolationCluster ~ degree.0*inequality*visibleWealth*wealth, 
+      data = clust[clust$inequality!="none",], 
+      family = binomial(link = "logit"))
+alpha <- 0.05
+x.isolationCluster.IE <- summary(reg.isolationCluster.IE)
+y.isolationCluster.IE <- confint(reg.isolationCluster.IE, level=1-alpha)
+coef.isolationCluster.IE <- x.isolationCluster.IE$coefficients[,1]
+LowerCL.isolationCluster.IE <- y.isolationCluster.IE[,1]
+UpperCL.isolationCluster.IE <- y.isolationCluster.IE[,2]
+coef.isolationCluster.IE <- x.isolationCluster.IE$coefficients[,1]
+p.isolationCluster.IE <-x.isolationCluster.IE$coefficients[,4]
+z.isolationCluster.IE <- cbind(coef.isolationCluster.IE, LowerCL.isolationCluster.IE, UpperCL.isolationCluster.IE, p.isolationCluster.IE)
+z.isolationCluster.IE
+summary(reg.isolationCluster.IE)
+
+#no initial inequality
+reg.isolationCluster.noIE = glm(isolationCluster ~ degree.0*visibleWealth, 
+      data = clust[clust$inequality=="none",], 
+      family = binomial(link = "logit"))
+alpha <- 0.05
+x.isolationCluster.noIE <- summary(reg.isolationCluster.noIE)
+y.isolationCluster.noIE <- confint(reg.isolationCluster.noIE, level=1-alpha)
+coef.isolationCluster.noIE <- x.isolationCluster.noIE$coefficients[,1]
+LowerCL.isolationCluster.noIE <- y.isolationCluster.noIE[,1]
+UpperCL.isolationCluster.noIE <- y.isolationCluster.noIE[,2]
+coef.isolationCluster.noIE <- x.isolationCluster.noIE$coefficients[,1]
+p.isolationCluster.noIE <-x.isolationCluster.noIE$coefficients[,4]
+z.isolationCluster.noIE <- cbind(coef.isolationCluster.noIE, LowerCL.isolationCluster.noIE, UpperCL.isolationCluster.noIE, p.isolationCluster.noIE)
+z.isolationCluster.noIE
+summary(reg.isolationCluster.noIE)
+
+
+#Defining the outcome: second, we define social isolation as degree=0 in round 6 or later
+#full sample
+reg.isolated = glm(isolated ~ degree.0, 
+      data = clust, 
+      family = binomial(link = "logit"))
+alpha <- 0.05
+x.isolated <- summary(reg.isolated)
+y.isolated <- confint(reg.isolated, level=1-alpha)
+coef.isolated <- x.isolated$coefficients[,1]
+LowerCL.isolated <- y.isolated[,1]
+UpperCL.isolated <- y.isolated[,2]
+coef.isolated <- x.isolated$coefficients[,1]
+p.isolated <-x.isolated$coefficients[,4]
+z.isolated <- cbind(coef.isolated, LowerCL.isolated, UpperCL.isolated, p.isolated)
+z.isolated
+summary(reg.isolated)
+
+#with initial inequality
+reg.isolated.IE = glm(isolated ~ degree.0*inequality*visibleWealth*wealth, 
+      data = clust[clust$inequality!="none",], 
+      family = binomial(link = "logit"))
+alpha <- 0.05
+x.isolated.IE <- summary(reg.isolated.IE)
+y.isolated.IE <- confint(reg.isolated.IE, level=1-alpha)
+coef.isolated.IE <- x.isolated.IE$coefficients[,1]
+LowerCL.isolated.IE <- y.isolated.IE[,1]
+UpperCL.isolated.IE <- y.isolated.IE[,2]
+coef.isolated.IE <- x.isolated.IE$coefficients[,1]
+p.isolated.IE <-x.isolated.IE$coefficients[,4]
+z.isolated.IE <- cbind(coef.isolated.IE, LowerCL.isolated.IE, UpperCL.isolated.IE, p.isolated.IE)
+z.isolated.IE
+summary(reg.isolated.IE)
+
+#no initial inequality
+reg.isolated.noIE = glm(isolated ~ degree.0*visibleWealth, 
+      data = clust[clust$inequality=="none",], 
+      family = binomial(link = "logit"))
+alpha <- 0.05
+x.isolated.noIE <- summary(reg.isolated.noIE)
+y.isolated.noIE <- confint(reg.isolated.noIE, level=1-alpha)
+coef.isolated.noIE <- x.isolated.noIE$coefficients[,1]
+LowerCL.isolated.noIE <- y.isolated.noIE[,1]
+UpperCL.isolated.noIE <- y.isolated.noIE[,2]
+coef.isolated.noIE <- x.isolated.noIE$coefficients[,1]
+p.isolated.noIE <-x.isolated.noIE$coefficients[,4]
+z.isolated.noIE <- cbind(coef.isolated.noIE, LowerCL.isolated.noIE, UpperCL.isolated.noIE, p.isolated.noIE)
+z.isolated.noIE
+summary(reg.isolated.noIE)
+```
+
+```{r}
+#Defining the outcome: first, we define social isolation based on clustering results
+#full sample
+#glm(isolationCluster ~ degree.0, data = clust, family = binomial(link = "logit"))
+kable(z.isolationCluster)
+
+#with initial inequality
+#glm(isolationCluster ~ degree.0*inequality*visibleWealth*wealth, data = clust[clust$inequality!="none",], family = binomial(link = "logit"))
+kable(z.isolationCluster.IE)
+
+#no initial inequality
+#reg.isolationCluster.noIE = glm(isolationCluster ~ degree.0*visibleWealth, data = clust[clust$inequality=="none",], family = binomial(link = "logit"))
+kable(z.isolationCluster.noIE)
+
+#Defining the outcome: second, we define social isolation as degree=0 in round 1 or later
+#full sample
+#reg.isolated = glm(isolated ~ degree.0, data = clust,family = binomial(link = "logit"))
+kable(z.isolated)
+
+#with initial inequality
+#reg.isolated.IE = glm(isolated ~ degree.0*inequality*visibleWealth*wealth, data = clust[clust$inequality!="none",], family = binomial(link = "logit"))
+kable(z.isolated.IE)
+
+#no initial inequality
+#reg.isolated.noIE = glm(isolated ~ degree.0*visibleWealth, data = clust[clust$inequality=="none",], family = binomial(link = "logit"))
+kable(z.isolated.noIE)
+```
+

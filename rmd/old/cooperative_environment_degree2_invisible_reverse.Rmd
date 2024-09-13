@@ -1,0 +1,769 @@
+---
+title: "Does a cooperative environment affect isolation?"
+author: "Ryunosuke Goto"
+date: "10/19/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+
+#to run RMD
+#library(rmarkdown)
+#rootdir <- system("git rev-parse --show-toplevel", intern=TRUE)[1]
+#rmarkdown::render(paste(rootdir,"rmd/cooperative_environment_degree2_invisible_reverse.Rmd", sep="/"))
+
+knitr::opts_chunk$set(echo = TRUE)
+
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(arsenal)
+library(gridExtra)
+library(ggpubr)
+library(cowplot)
+library(grid)
+library(MASS)
+library(knitr)
+library(igraph)
+library(data.table)
+library(Rtsne)
+library(caret)
+library(pdp)
+library(dtwclust)
+library(randomForest)
+library(igraph)
+
+rootdir <- system("git rev-parse --show-toplevel", intern=TRUE)[1]
+
+source(paste(rootdir,"R/degree.R",sep="/"))
+sampleList <- degree(redo=TRUE) #set redo=TRUE to update
+
+g.isolation = sampleList[[3]]
+sample.wide = sampleList[[4]]
+cdata = sampleList[[5]]
+ndata = sampleList[[6]]
+
+#define isolation
+sample.wide$isolated = ifelse(sample.wide$degree.1<=2 | sample.wide$degree.2<=2 | sample.wide$degree.3<=2 | sample.wide$degree.4<=2 | sample.wide$degree.5<=2| sample.wide$degree.6<=2 | sample.wide$degree.7<=2 | sample.wide$degree.8<=2 | sample.wide$degree.9<=2 | sample.wide$degree.10<=2, 1, 0)
+```
+
+
+
+#Does allocating cooperative individuals to high-degree nodes prevent isolation?
+```{r}
+round = NULL
+gameID = NULL 
+nodes = NULL
+meanDegree = NULL
+meanDegreeCoop = NULL #mean degree among those who cooperated
+meanDegreeDefect = NULL #mean degree among those who defected
+meanDist = NULL #mean shortest path length divided by the maximum possible path length (Nvertices - 1)
+maxDist = NULL #max shortest path length divided by the maximum possible path length (Nvertices - 1)
+coefGlobal = NULL #global clustering coefficient
+percentCoop = NULL #proportion of those who cooperated
+percentCoopPopular = NULL #proportion of those who cooperated, among those with degree >=10
+coopEnv = NULL 
+assort = NULL
+
+for(i in 1:length(g.isolation)){
+    round[i] =  mean(V(g.isolation[[i]])$round)
+    gameID[i] = V(g.isolation[[i]])$gameID[1]
+    nodes[i] = vcount(g.isolation[[i]])
+    meanDegree[i] = mean(igraph::degree(g.isolation[[i]]),na.rm=TRUE)
+    meanDegreeCoop[i] = mean(igraph::degree(g.isolation[[i]])[V(g.isolation[[i]])$behavior=="C"],na.rm=TRUE)
+    meanDegreeDefect[i] = mean(igraph::degree(g.isolation[[i]])[V(g.isolation[[i]])$behavior=="D"],na.rm=TRUE)
+    meanDist[i] = mean(distances(g.isolation[[i]])[distances(g.isolation[[i]])!=0 & distances(g.isolation[[i]])!=Inf],na.rm=TRUE) / length(V(g.isolation[[i]])-1)
+    maxDist[i] = max(distances(g.isolation[[i]])[distances(g.isolation[[i]])!=0 & distances(g.isolation[[i]])!=Inf],na.rm=TRUE) / length(V(g.isolation[[i]])-1)
+    coefGlobal[i] = transitivity(g.isolation[[i]], type="global")
+    percentCoop[i] = prop.table(table(V(g.isolation[[i]])$behavior))["C"]
+    percentCoopPopular[i] = prop.table(table(V(g.isolation[[i]])$behavior[igraph::degree(g.isolation[[i]])>=6]))["C"]
+    coopEnv[i] = sum(ifelse(V(g.isolation[[i]])$behavior=="C",1,0)*igraph::degree(g.isolation[[i]])/sum(igraph::degree(g.isolation[[i]])),na.rm=TRUE)
+    assort[i] = assortativity(g.isolation[[i]], V(g.isolation[[i]])$behavior == "C")
+}
+
+smallWorld = data.frame(
+  round = round,
+  gameID = gameID,
+  nodes = nodes,
+  meanDegree = meanDegree,
+  meanDegreeCoop = meanDegreeCoop,
+  meanDegreeDefect = meanDegreeDefect,
+  diffDegreeCD = meanDegreeCoop - meanDegreeDefect,
+  meanDist = meanDist,
+  maxDist = maxDist,
+  coefGlobal = coefGlobal,
+  percentCoop = percentCoop,
+  percentCoopPopular = percentCoopPopular,
+  coopEnv = coopEnv,
+  assort = assort
+)
+
+
+round = NULL
+gameID = NULL
+visibleWealth = NULL
+n=1
+for(i in unique(cdata$round)){
+  for(m in unique(cdata$gameID)){
+    round[n] = as.numeric(i)-1
+    gameID[n] = m
+    visibleWealth[n] = ifelse(cdata[cdata$round==i & cdata$gameID==m,]$showScore[1]=="true",1,0)
+    n=n+1
+  }
+}
+
+smallWorld.2 = data.frame(
+  round = round,
+  gameID = gameID,
+  visibleWealth = visibleWealth
+)
+
+smallWorld = merge(smallWorld, smallWorld.2, by=c("gameID","round"), all.x=TRUE)
+
+smallWorld.initial = subset(smallWorld, smallWorld$round==0)
+
+#percent of people that end up being isolated for each gameID
+percentIsolated = NULL
+percentIsolated = aggregate(isolated ~ gameID, data=sample.wide, FUN=max, na.rm=TRUE)
+smallWorld.initial = merge(smallWorld.initial[c("gameID","meanDegree","meanDegreeCoop","meanDegreeDefect","diffDegreeCD","meanDist","coefGlobal","visibleWealth","percentCoop","percentCoopPopular","coopEnv","assort")],percentIsolated, by="gameID", all.x=TRUE)
+
+percentIsolated = NULL
+percentIsolated = aggregate(isolated ~ gameID, data=sample.wide, FUN=mean, na.rm=TRUE)
+percentIsolated = percentIsolated %>% rename(
+  percentIsolated = isolated
+)
+smallWorld.initial = merge(smallWorld.initial,percentIsolated, by="gameID", all.x=TRUE)
+
+
+
+
+reg = glm(isolated ~ coopEnv, 
+      data = smallWorld.initial,
+      family = binomial(link = "logit"))
+summary(reg)
+
+reg = glm(isolated ~ coopEnv*percentCoop, 
+      data = smallWorld.initial,
+      family = binomial(link = "logit"))
+summary(reg)
+
+reg = glm(isolated ~ assort, 
+      data = smallWorld.initial,
+      family = binomial(link = "logit"))
+summary(reg)
+
+reg = glm(isolated ~ assort*percentCoop, 
+      data = smallWorld.initial,
+      family = binomial(link = "logit"))
+summary(reg)
+
+
+
+reg = glm(percentIsolated ~ coopEnv, 
+      data = smallWorld.initial, 
+      family = gaussian(link = "identity"))
+summary(reg)
+
+reg = glm(percentIsolated ~ coopEnv*percentCoop, 
+      data = smallWorld.initial, 
+      family = gaussian(link = "identity"))
+summary(reg)
+
+reg = glm(percentIsolated ~ assort, 
+      data = smallWorld.initial, 
+      family = gaussian(link = "identity"))
+summary(reg)
+
+reg = glm(percentIsolated ~ assort*percentCoop, 
+      data = smallWorld.initial, 
+      family = gaussian(link = "identity"))
+summary(reg)
+
+
+
+# #MSM
+# # estimation of denominator of ip weights
+# #cooperatorの数以外は全てRandom（Erdos-Renyi random graphにより決まるため）なので、coopEnvはpercentCoopで調整すれば十分か
+# den.fit.obj <- lm(coopEnv ~ percentCoop + I(percentCoop^2), data = smallWorld.initial)
+# p.den <- predict(den.fit.obj, type = "response")
+# dens.den <- dnorm(smallWorld.initial$coopEnv, p.den, summary(den.fit.obj)$sigma)
+# 
+# # estimation of numerator of ip weights
+# num.fit.obj <- lm(coopEnv ~ 1, data = smallWorld.initial)
+# p.num <- predict(num.fit.obj, type = "response")
+# dens.num <- dnorm(smallWorld.initial$coopEnv, p.num, summary(num.fit.obj)$sigma)
+# 
+# smallWorld.initial$sw.a = dens.num/dens.den
+# summary(smallWorld.initial$sw.a)
+# 
+# msm.sw.cont <-geepack::geeglm(isolated ~ coopEnv, 
+#                  data=smallWorld.initial, weights=sw.a, family = binomial(link="logit"), id=gameID, corstr="independence")
+# summary(msm.sw.cont)
+# 
+# msm.sw.cont <-geepack::geeglm(percentIsolated ~ coopEnv, 
+#                  data=smallWorld.initial, weights=sw.a, family = gaussian(link="identity"), id=gameID, corstr="independence")
+# summary(msm.sw.cont)
+
+
+ggplot(data = smallWorld.initial, aes(x = coopEnv, y = percentIsolated)) + 
+  geom_point() +
+  ggtitle("Percent isolated") +
+  scale_x_continuous("Cooporative environment") +  
+  scale_y_continuous("Percent of individuals isolated") + 
+  scale_fill_continuous(type = "viridis")
+
+
+ggplot(data = smallWorld.initial, aes(x = assort, y = percentIsolated)) + 
+  geom_point() +
+  ggtitle("Percent isolated") +
+  scale_x_continuous("Assortativity coefficient of initial C/D") +  
+  scale_y_continuous("Percent of individuals isolated") + 
+  scale_fill_continuous(type = "viridis")
+
+
+```
+
+#Simulation 1
+##All graphs start as Erdos-Renyi random newtorks
+##Change where to place the cooperators in the network: 1. defectors have high degrees
+```{r simulation_C_low_degree}
+#Define degrees of isolation
+isolationDegree = 2
+
+#number of iterations per arm
+iterations = 50
+
+modelForPrediction=="random forest" #"linear" or "random forest"
+
+# List of manipulating parameters of experiments
+#L : number of round
+#V : Visible or not
+#A : Income of a rich-group subject
+#B : Income of a poor-group subject
+#R : Probability to be assigned to a rich group
+#I : Number of the same-parameter trial
+L = 10
+V = 0
+A = 700
+B = 300
+R = 0.5
+I = 0
+
+if(modelForPrediction=="random forest"){
+  source(paste(rootdir,"R/models.R",sep="/"))
+  if(V==0){
+    model1<-model1(redo=TRUE,visible=FALSE)
+    model2<-model2(redo=TRUE,visible=FALSE)
+    model3<-model3(redo=TRUE,visible=FALSE)
+    }
+  if(V==1){
+    model1<-model1(redo=TRUE,visible=TRUE)
+    model2<-model2(redo=TRUE,visible=TRUE)
+    model3<-model3(redo=TRUE,visible=TRUE)
+    }
+}
+
+df.netIntLowDegree = data.frame(
+  coopFrac = NULL,
+  avgCoop = NULL, 
+  avgCoopFinal = NULL, 
+  percentIsolation = NULL,
+  isolation = NULL,
+  percentIsolatedD = NULL,
+  nCommunities = NULL,
+  communitySize = NULL,
+  assortativityInitial = NULL,
+  assortativityFinal = NULL,
+  conversionRate = NULL,
+  conversionToD = NULL, 
+  conversionToC = NULL, 
+  degreeC = NULL, 
+  degreeD = NULL,
+  meanConversionToD = NULL, 
+  meanConversionToC = NULL, 
+  degreeLost = NULL,
+  degreeLostC = NULL,
+  degreeLostD = NULL
+)
+
+
+for(frac in c(0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1)){
+  #nodes in the top fractionCoop degrees will automatically be a cooperator
+  fractionCoop = frac
+  
+    coopFrac = NULL
+    avgCoop = NULL
+    avgCoopFinal = NULL
+    percentIsolation = NULL
+    isolation = NULL
+    percentIsolatedD = NULL
+    nCommunities = NULL
+    communitySize = NULL
+    assortativityInitial = NULL
+    assortativityFinal = NULL
+    conversionRate = NULL
+    conversionToD = NULL 
+    conversionToC = NULL
+    degreeC = NULL
+    degreeD = NULL
+    meanConversionToD = NULL 
+    meanConversionToC = NULL
+    degreeLost = NULL
+    degreeLostC = NULL
+    degreeLostD = NULL
+    for(m in c(1:iterations)){
+      # Section 1. NOTES, packages, and Parameters
+      #Importing library
+      library(igraph) # for network graphing
+      library(reldist) # for gini calculatio
+      library(boot) # for inv.logit calculation
+      #Two prefixed functions
+      #rank
+      rank1 = function(x) {rank(x,na.last=NA,ties.method="average")[1]} #a smaller value has a smaller rank.
+      #gini mean difference (a.k.a. mean difference: please refer to https://stat.ethz.ch/pipermail/r-help/2003-April/032782.html)
+      gmd = function(x) {
+       x1 = na.omit(x)
+       n = length(x1)
+      tmp = 0
+       for (i in 1:n) {
+       for (j in 1:n) {
+       tmp <- tmp + abs(x1[i]-x1[j])
+       }
+       }
+      answer = tmp/(n*n)
+       return(answer)
+      }
+  
+      
+      
+      
+      # List of fixed parameters of experiments (assumptions)
+      #Rewiring rate = 0.3
+      #GINI coefficient (can be known by A or B)
+      GINI = 0*as.numeric(A==500) + 0.2*as.numeric(A %in% c(700,850)) + 0.4*as.numeric(A ==1150)
+      #Collecting data frame (final output data frame)
+      result = data.frame(round=0:L,n_par=NA,n_A=NA,avg_coop=NA,avg_degree=NA,avg_wealth=NA,gini=NA,gmd=NA,avg_coop_A=NA,avg_degree_A=NA,avg_wealth_A=NA,gini_A=NA,gmd_A=NA,avg_coop_B=NA,avg_degree_B=NA,avg_wealth_B=NA,gini_B=NA,gmd_B=NA,isolation=NA,percentIsolation=NA,meanConversionToD=NA,meanConversionToC=NA,degreeLost=NA,degreeLostC=NA,degreeLostD=NA)
+      #_A is for a richer group and _B is for a poorer group
+      
+      
+      #####################################################
+      # Section 1.5: Practice rounds 1 to 2, to determine C/D in round 1
+      
+      N = 17 # median of the number of participants over rounds.
+      node_rp0 = data.frame(ego_id=1:N, round=0)
+      node_import = node_rp0
+      
+      for (k in 1:2){
+        node_rX = node_import #Importing data
+        node_rX$round = node_rX$round + 1
+        node_rX[is.na(node_rX$prev_degree)==1,"prev_degree"] = 0
+        node_rX[is.na(node_rX$prev_local_rate_coop)==1,"prev_local_rate_coop"] = 0
+        #Only this calculation needs to change from Round 1
+        if (k==1) {
+          node_rX$prob_coop = inv.logit(1.099471) 
+        } else {
+          node_rX$prob_coop = inv.logit((-0.02339288) + (1.46068980)*as.numeric(node_rX$prev_coop==1))
+        } 
+        
+        node_rX$coop = apply(data.frame(node_rX$prob_coop),1,function(x) {sample(1:0,1,prob=c(x,(1-x)))})
+        
+        node_rX$prev_coop = node_rX$coop
+          
+        assign(paste("coop_rp",k, sep=""),node_rX$coop)
+        
+        #For the loop
+        node_import = node_rX
+      }
+      
+      #cooperation rate in the practice rounds
+      coop_rp = apply(cbind(coop_rp1,coop_rp2),1,mean)
+
+      #####################################################
+      # Section 2: Round 0 (Agents and environments)
+      #Node data generation
+      N = 17 # median of the number of participants over rounds.
+      node_r0 = data.frame(ego_id=1:N, round=0)
+      node_r0$group = sample(c("rich","poor"),N,replace=TRUE,prob=c(R,1-R)) #R is defined as the probability to be assigned to the rich group
+      node_r0$initial_wealth = ifelse(node_r0$group=="rich",A,B)
+      #Link data generation
+      ego_list = NULL
+      for (i in 1:N) { ego_list = c(ego_list,rep(i,N)) }
+      link_r0 = data.frame(ego_id=ego_list,alt_id=rep(1:N,N))
+      link_r0 = link_r0[(link_r0$ego_id < link_r0$alt_id),] #The link was bidirectional, and thus the half and self are omitted.
+      link_r0$connected = sample(0:1,dim(link_r0)[1],replace=TRUE,prob=c(0.7,0.3)) #Initial rewiring rate is fixed, 0.3
+      link_r0c_ego = link_r0[link_r0$connected==1,]
+      link_r0c_alt = link_r0[link_r0$connected==1,]
+      colnames(link_r0c_alt) = c("alt_id","ego_id","connected")
+      link_r0c = rbind(link_r0c_ego,link_r0c_alt) #this is bidirectional (double counted) for connected ties.
+      link_r0c = link_r0c[order(link_r0c$ego_id),]
+      link_r0c$alternumber = NA #putting the number for each alter in the same ego
+      link_r0c[1,]$alternumber = 1
+      for (i in 1:(dim(link_r0c)[1]-1))
+        {if (link_r0c[i,]$ego_id == link_r0c[i+1,]$ego_id)
+          {link_r0c[i+1,]$alternumber = link_r0c[i,]$alternumber + 1}
+        else
+          {link_r0c[i+1,]$alternumber = 1}
+        #print(i)
+        }
+      link_r0c2 = reshape(link_r0c, direction = "wide", idvar=c("ego_id","connected"), timevar="alternumber")
+      link_r0c2$initial_degree = apply(link_r0c2[,colnames(link_r0c2)[substr(colnames(link_r0c2),1,6) == "alt_id"]],1,function(x){length(na.omit(x))}) #Degree of each ego
+      link_r0c2[is.na(link_r0c2$initial_degree)==1,"initial_degree"] = 0
+      #Reflect the degree and initial local gini coefficient into the node data
+      node_r0 = merge(x=node_r0,y=link_r0c2,all.x=TRUE,all.y=FALSE,by="ego_id")
+      node_r0$initial_avg_env_wealth = NA
+      node_r0$initial_local_gini = NA #local gini coefficient of the ego and connecting alters
+      node_r0$initial_rel_rank = NA #local rank of ego among the ego and connecting alters (divided by the number of the go and connecting alters)
+      for (i in 1:(dim(node_r0)[1])){
+        node_r0[i,]$initial_avg_env_wealth = mean(na.omit(node_r0[node_r0$ego_id %in%
+        node_r0[i,colnames(node_r0)[substr(colnames(node_r0),1,6) %in% c("ego_id","alt_id")]],"initial_wealth"]))
+        node_r0[i,]$initial_local_gini = gini(na.omit(node_r0[node_r0$ego_id %in% node_r0[i,colnames(node_r0)[substr(colnames(node_r0),1,6)
+        %in% c("ego_id","alt_id")]],"initial_wealth"]))
+        node_r0[i,]$initial_rel_rank = rank1(na.omit(node_r0[node_r0$ego_id %in% node_r0[i,colnames(node_r0)[substr(colnames(node_r0),1,6)
+        %in% c("ego_id","alt_id")]],"initial_wealth"]))/length(na.omit(node_r0[node_r0$ego_id %in%
+        node_r0[i,colnames(node_r0)[substr(colnames(node_r0),1,6) %in% c("ego_id","alt_id")]],"initial_wealth"]))
+        }
+      #Finalization of round 0 and Visualization
+      #plot(graph.data.frame(link_r0[link_r0$connected==1,],directed=F)) #plot.igraph
+      node_r0$everIsolated = 0
+      node_r0$maxDegreeLost = NA
+      result[result$round==0,2:25] = c(length(node_r0$ego_id),length(node_r0[node_r0$group=="rich",]$ego_id),NA,mean(node_r0$initial_degree),mean(node_r0$initial_wealth),gini(node_r0$initial_wealth),gmd(node_r0$initial_wealth),NA,mean(node_r0[node_r0$group=="rich",]$initial_degree),mean(node_r0[node_r0$group=="rich",]$initial_wealth),gini(node_r0[node_r0$group=="rich",]$initial_wealth),gmd(node_r0[node_r0$group=="rich",]$initial_wealth),NA,mean(node_r0[node_r0$group=="poor",]$initial_degree),mean(node_r0[node_r0$group=="poor",]$initial_wealth),gini(node_r0[node_r0$group=="poor",]$initial_wealth),gmd(node_r0[node_r0$group=="poor",]$initial_wealth),
+                                       as.numeric(ifelse(is.na(table(node_r0$initial_degree<=isolationDegree)["TRUE"]),0,1)),
+                                       as.numeric(sum(node_r0$everIsolated)/length(node_r0$ego_id)),
+                                       NA,
+                                       NA,
+                                       NA,NA,NA
+                                       )
+      
+      #For the loop at the next round (for round 1, the initial one is the same as the previous [1 prior] one)
+      node_import = node_r0
+      node_import$initial_coop = NA
+      node_import$prev_coop = NA
+      node_import$prev_wealth = node_import$initial_wealth
+      node_import$prev_degree = node_import$initial_degree
+      node_import$prev_avg_env_wealth = node_import$initial_avg_env_wealth
+      node_import$prev_local_gini = node_import$initial_local_gini
+      node_import$prev_rel_rank = node_import$initial_rel_rank
+      node_import$prev_local_rate_coop = NA
+      link_import = link_r0
+      
+      
+      #####################################################
+      # Section 3: Rounds 1 to 10 or more (behaviors in simulation: the equation of cooperation is different at round 1 because of no history)
+      #3-1: Cooperation phase
+      for (k in 1:L)
+      {
+        node_rX = node_import #Importing data
+        node_rX$round = node_rX$round + 1
+        node_rX[is.na(node_rX$prev_degree)==1,"prev_degree"] = 0
+        node_rX[is.na(node_rX$prev_local_rate_coop)==1,"prev_local_rate_coop"] = 0
+        #Only this calculation needs to change from Round 1
+        if(modelForPrediction=="linear"){
+          if (k==1) {
+            node_rX$prob_coop = as.numeric(V==0)*inv.logit((-1.816665) + (2.086067)*coop_rp1 + (1.800153)*coop_rp2) + as.numeric(V==1)*inv.logit((-2.031577) + (2.427157)*coop_rp1 + (1.684193)*coop_rp2 + (-1.528851)*GINI)
+            } else {
+            node_rX$prob_coop = as.numeric(V==0 & node_rX$prev_coop==0)*inv.logit(-1.039916) + as.numeric(V==0 & node_rX$prev_coop==1)*inv.logit(2.062023) + as.numeric(V==1 & node_rX$prev_coop==0)*inv.logit((-0.2574838)*as.numeric(node_rX$prev_avg_env_wealth - node_rX$prev_wealth > 0) + (-1.214198)*GINI + (2.508148)*GINI*as.numeric(node_rX$prev_avg_env_wealth - node_rX$prev_wealth > 0) + (-0.9749075)) + as.numeric(V==1 & node_rX$prev_coop==1)*inv.logit((- 0.6197254)*as.numeric(node_rX$prev_avg_env_wealth - node_rX$prev_wealth > 0) + (-0.7480261)*GINI + (1.169674)*GINI*as.numeric(node_rX$prev_avg_env_wealth - node_rX$prev_wealth > 0) + (1.356784))
+            } 
+        }
+        if(modelForPrediction=="random forest"){
+          if (k==1) {
+              if(V==1){node_rX$prob_coop = predict(model1,node_rX[c("coop_rp1","coop_rp2","GINI")])}
+              else if(V==0){node_rX$prob_coop = predict(model1,node_rX[c("coop_rp1","coop_rp2")])}
+            } else {
+              if(V==1){node_rX$prob_coop = predict(model2,node_rX[c("prev_coop","GINI","prev_avg_env_wealth","prev_wealth")])}
+              else if(V==0){node_rX$prob_coop = predict(model2,node_rX[c("prev_coop","prev_avg_env_wealth","prev_wealth")])}
+            }
+        }
+        #####manipulate cooperation rate ar round 1 depending on the degree! (keep the total coopertion rate at round 1 constant)
+        #####make it so that the nodes with the top fractionCoop*100 percentile of degrees will 100% be a cooperator, but the average percentage of being a cooperator will be the same
+        if(k==1){
+          prob_coop_df = NULL
+          nodesCoop = NULL
+          nodesCoop = node_rX$prev_degree>quantile(node_rX$prev_degree,fractionCoop) #assign high-degree nodes to defectors
+          prob_coop_df = 
+            data.frame(
+              prob_coop = node_rX$prob_coop[order(coop_rp)],
+              node_number = c(which(nodesCoop),which(!nodesCoop))
+            )
+          node_rX$prob_coop = prob_coop_df[order(prob_coop_df$node_number),]$prob_coop
+          node_rX$coop = apply(data.frame(node_rX$prob_coop),1,function(x) {sample(1:0,1,prob=c(x,(1-x)))})
+        } else {
+          node_rX$coop = apply(data.frame(node_rX$prob_coop),1,function(x) {sample(1:0,1,prob=c(x,(1-x)))})
+        }
+        if (k==1) {
+          node_rX$initial_coop = node_rX$coop
+          } else {
+          node_rX$initial_coop = node_rX$initial_coop
+          }
+        node_rX$cost = (-50)*node_rX$coop*node_rX$prev_degree
+        node_rX$n_coop_received = NA
+        for (i in 1:(dim(node_rX)[1]))
+          {
+          node_rX[i,]$n_coop_received = sum(node_rX[node_rX$ego_id %in% node_rX[i,colnames(node_rX)[substr(colnames(node_rX),1,6) ==
+          "alt_id"]],"coop"])
+          }
+        node_rX$benefit = 100*node_rX$n_coop_received
+        node_rX$payoff = node_rX$cost + node_rX$benefit
+        node_rX$wealth = node_rX$prev_wealth + node_rX$payoff
+        node_rX$rel_rank = NA
+        node_rX$local_rate_coop = NA
+        for (i in 1:dim(node_rX)[1])
+          {
+          node_rX[i,]$rel_rank = rank1(na.omit(node_rX[node_rX$ego_id %in% node_rX[i,colnames(node_rX)[substr(colnames(node_rX),1,6) %in%
+          c("ego_id","alt_id")]],"wealth"]))/length(na.omit(node_rX[node_rX$ego_id %in%
+          node_rX[i,colnames(node_rX)[substr(colnames(node_rX),1,6) %in% c("ego_id","alt_id")]],"wealth"]))
+          node_rX[i,]$local_rate_coop = mean(na.omit(node_rX[node_rX$ego_id %in% node_rX[i,colnames(node_rX)[substr(colnames(node_rX),1,6) %in%
+          c("ego_id","alt_id")]],"coop"]))
+          }
+        node_rX$growth = as.numeric((node_rX$wealth/node_rX$prev_wealth) > 1)
+        node_rX = node_rX[,c("ego_id","round","group","prev_degree","initial_wealth","initial_local_gini","initial_coop","coop","wealth","rel_rank","local_rate_coop","growth","everIsolated","maxDegreeLost")] #Pruning the previous-round data (degree is not updating yet)
+        
+        #3-2: Rewiring phase
+        # 30% of ties (unidirectional) are being rewired
+        link_rX_1 = link_import #Importing data (bidirectioanl ego-alter [ego_id < alter_id])
+        colnames(link_rX_1) = c("ego_id","alt_id","prev_connected")
+        link_rX_1$challenge = sample(0:1,dim(link_rX_1)[1],replace=TRUE,prob=c(0.7,0.3)) # The bidirectional ties being rewired are selected (rewiring rate = 0.3).
+        ego_node_data =
+        node_rX[,c("ego_id","wealth","coop","prev_degree","initial_wealth","initial_local_gini","initial_coop","rel_rank","local_rate_coop","growth")]
+        colnames(ego_node_data) =
+        c("ego_id","ego_wealth","ego_coop","ego_prev_degree","ego_initial_wealth","ego_initial_local_gini","ego_initial_coop","ego_rel_rank","ego_local_rate_coop","ego_growth")
+        alt_node_data =
+        node_rX[,c("ego_id","wealth","coop","prev_degree","initial_wealth","initial_local_gini","initial_coop","rel_rank","local_rate_coop","growth")]
+        colnames(alt_node_data) =
+        c("alt_id","alt_wealth","alt_coop","alt_prev_degree","alt_initial_wealth","alt_initial_local_gini","alt_initial_coop","alt_rel_rank","alt_local_rate_coop","alt_growth")
+        link_rX_2 = merge(x=link_rX_1,y=ego_node_data,all.x=TRUE,all.y=FALSE,by="ego_id")
+        link_rX_3 = merge(x=link_rX_2,y=alt_node_data,all.x=TRUE,all.y=FALSE,by="alt_id")
+        link_rX_3$choice = sample(c("ego","alt"),dim(link_rX_3)[1],replace=TRUE,prob=c(0.5,0.5)) #decision maker for breaking a link, which is a unilateral decision
+        #ego_prob: probability of choosing to connect when challenged (asked)
+        link_rX_3$ego_prob = inv.logit((0.5134401)*link_rX_3$prev_connected + (-0.852406)*link_rX_3$ego_coop + (2.96549)*link_rX_3$alt_coop + (-0.1808545))
+        link_rX_3$alt_prob = inv.logit((0.5134401)*link_rX_3$prev_connected + (-0.852406)*link_rX_3$alt_coop + (2.96549)*link_rX_3$ego_coop + (-0.1808545))
+        link_rX_3$prob_connect = ifelse(link_rX_3$prev_connected == 1, ifelse(link_rX_3$choice == "ego", link_rX_3$ego_prob,
+        link_rX_3$alt_prob), link_rX_3$ego_prob*link_rX_3$alt_prob)
+        link_rX_3$connect_update = apply(data.frame(link_rX_3$prob_connect),1, function(x) {sample(1:0,1,prob=c(x,(1-x)))})
+        link_rX_3$connected = ifelse(link_rX_3$challenge==0,link_rX_3$prev_connected,link_rX_3$connect_update)
+        link_rX = link_rX_3[,c("ego_id","alt_id","connected")] #pruning and data is updated
+        #Reflect the degree and local gini coefficient into the node data
+        link_rXc_ego = link_rX[link_rX$connected==1,]
+        link_rXc_alt = link_rX[link_rX$connected==1,]
+        colnames(link_rXc_alt) = c("alt_id","ego_id","connected")
+        link_rXc = rbind(link_rXc_ego,link_rXc_alt)
+        link_rXc = link_rXc[order(link_rXc$ego_id),]
+        link_rXc$alternumber = NA
+        link_rXc[1,]$alternumber = 1
+        for (i in 1:(dim(link_rXc)[1]-1))
+          {
+            if (link_rXc[i,]$ego_id == link_rXc[i+1,]$ego_id)
+            {
+            link_rXc[i+1,]$alternumber = link_rXc[i,]$alternumber + 1
+            }
+            else
+            {
+            link_rXc[i+1,]$alternumber = 1
+            }
+            #print(i)
+          }
+        link_rXc2 = reshape(link_rXc, direction = "wide", idvar=c("ego_id","connected"), timevar="alternumber")
+        link_rXc2$degree = apply(link_rXc2[,colnames(link_rXc2)[substr(colnames(link_rXc2),1,3) == "alt"]],1,function(x) {length(na.omit(x))})
+        node_rX_final = merge(x=node_rX[,c("ego_id","round","group","initial_wealth","initial_local_gini","initial_coop","coop","wealth","growth","everIsolated","maxDegreeLost")],y=link_rXc2,all.x=TRUE,all.y=FALSE,by="ego_id")
+        node_rX_final[is.na(node_rX_final$degree)==1,"degree"] = 0
+        node_rX_final$avg_env_wealth = NA
+        node_rX_final$local_gini = NA #needs to be updated because the social network changes at the rewiring phase
+        node_rX_final$local_rate_coop = NA
+        node_rX_final$rel_rank = NA
+        for (i in 1:dim(node_rX_final)[1])
+          {
+          node_rX_final[i,]$avg_env_wealth = mean(na.omit(node_rX_final[node_rX_final$ego_id %in%
+          node_rX_final[i,colnames(node_rX_final)[substr(colnames(node_rX_final),1,6) %in% c("ego_id","alt_id")]],"wealth"]))
+          node_rX_final[i,]$local_gini = gini(na.omit(node_rX_final[node_rX_final$ego_id %in%
+          node_rX_final[i,colnames(node_rX_final)[substr(colnames(node_rX_final),1,6) %in% c("ego_id","alt_id")]],"wealth"]))
+          node_rX_final[i,]$local_rate_coop = mean(na.omit(node_rX_final[node_rX_final$ego_id %in%
+          node_rX_final[i,colnames(node_rX_final)[substr(colnames(node_rX_final),1,6) %in% c("ego_id","alt_id")]],"coop"]))
+          node_rX_final[i,]$rel_rank = rank1(na.omit(node_rX_final[node_rX_final$ego_id %in%
+          node_rX_final[i,colnames(node_rX_final)[substr(colnames(node_rX_final),1,6) %in%
+          c("ego_id","alt_id")]],"wealth"]))/length(na.omit(node_rX_final[node_rX_final$ego_id %in%
+          node_rX_final[i,colnames(node_rX_final)[substr(colnames(node_rX_final),1,6) %in% c("ego_id","alt_id")]],"wealth"]))
+          node_rX_final[i,]$everIsolated = ifelse(node_rX_final[i,]$everIsolated==1,1,ifelse(node_rX_final[i,]$degree<=isolationDegree,1,0))
+          node_rX_final[i,]$maxDegreeLost = pmax(node_r0[i,]$initial_degree - node_rX_final[i,]$degree, node_rX_final[i,]$maxDegreeLost, na.rm=TRUE)
+        }
+        
+        
+        #Finalization of round X and Visualization
+        #plot(graph.data.frame(link_rX[link_rX$connected==1,],directed=F)) #plot.igraph
+        result[result$round==k,2:25] =
+        c(length(node_rX_final$ego_id),length(node_rX_final[node_rX_final$group=="rich",]$ego_id),mean(node_rX_final$coop),mean(node_rX_final$degree),mean(node_rX_final$wealth),gini(node_rX_final$wealth),gmd(node_rX_final$wealth),mean(node_rX_final[node_rX_final$group=="rich",]$coop),mean(node_rX_final[node_rX_final$group=="rich",]$degree),mean(node_rX_final[node_rX_final$group=="rich",]$wealth),gini(node_rX_final[node_rX_final$group=="rich",]$wealth),gmd(node_rX_final[node_rX_final$group=="rich",]$wealth),mean(node_rX_final[node_rX_final$group=="poor",]$coop),mean(node_rX_final[node_rX_final$group=="poor",]$degree),mean(node_rX_final[node_rX_final$group=="poor",]$wealth),gini(node_rX_final[node_rX_final$group=="poor",]$wealth),gmd(node_rX_final[node_rX_final$group=="poor",]$wealth),
+                                       as.numeric(ifelse(is.na(table(node_rX_final$degree<=isolationDegree)["TRUE"]),0,1)),
+                                       as.numeric(sum(node_rX_final$everIsolated)/length(node_rX_final$ego_id)),
+          prop.table(table(node_rX_final[node_rX_final$initial_coop==1]$coop))["0"],
+          prop.table(table(node_rX_final[node_rX_final$initial_coop==0]$coop))["1"],
+          suppressWarnings({mean(node_rX_final$maxDegreeLost,na.rm=TRUE)}),
+          suppressWarnings({mean(node_rX_final[node_rX_final$initial_coop==1]$maxDegreeLost,na.rm=TRUE)}),
+          suppressWarnings({mean(node_rX_final[node_rX_final$initial_coop==0]$maxDegreeLost,na.rm=TRUE)})
+          )
+        
+        #For the loop
+        node_import = node_rX_final
+        colnames(node_import)[colnames(node_import) %in%
+        c("coop","wealth","growth","degree","avg_env_wealth","local_gini","local_rate_coop","rel_rank")] =
+        c("prev_coop","prev_wealth","prev_growth","prev_degree","prev_avg_env_wealth","prev_local_gini","prev_local_rate_coop","prev_rel_rank")
+        link_import = link_rX
+        #print(paste0("Round ",k," is done."))
+      }
+      
+      coopFrac[m] = fractionCoop
+      avgCoop[m] = result[result$round==1,]$avg_coop
+      avgCoopFinal[m] = result[result$round==10,]$avg_coop
+      percentIsolation[m] = max(result[result$round>=1,]$percentIsolation)
+      isolation[m] = max(result[result$round>=1,]$isolation)
+      percentIsolatedD[m] = prop.table(table(node_rX_final[node_rX_final$everIsolated==1,]$initial_coop))["0"]
+      
+      
+      link_rX_final = data.table::melt(setDT(node_rX_final),
+                               measure = patterns('alt_id'),
+                               variable.name = 'linkNumber', 
+                               value.name = c('alt_id'))
+      link_rX_final = data.frame(link_rX_final)[c("ego_id","alt_id")]
+      link_rX_final = link_rX_final[complete.cases(link_rX_final),]
+      link_rX_final = data.frame(t(unique(apply(link_rX_final, 1, function(x) sort(x))))) %>% distinct(X1, X2)
+      node_g_final = data.frame(node_rX_final)[c("ego_id","initial_coop","coop")]
+      node_g_final$initial_coop = factor(node_g_final$initial_coop)
+      g_rX_final = graph_from_data_frame(link_rX_final, directed = FALSE, vertices=node_g_final)
+      g_r0 = graph_from_data_frame(link_r0[link_r0$connected==1,][1:2], directed = FALSE, vertices=node_r0)
+      nCommunities[m] = max(membership(cluster_louvain(g_rX_final)),na.rm=TRUE)
+      communitySize[m] = mean(table(membership(cluster_louvain(g_rX_final))),na.rm=TRUE)
+      assortativityInitial[m] = assortativity(g_r0, V(g_rX_final)$initial_coop == 1)
+      assortativityFinal[m] = assortativity(g_rX_final, V(g_rX_final)$initial_coop == 1)
+      conversionRate[m] = prop.table(table(V(g_rX_final)$coop == V(g_rX_final)$initial_coop))["FALSE"]
+      conversionToD[m] = prop.table(table(V(g_rX_final)$coop[V(g_rX_final)$initial_coop==1]))["0"]
+      conversionToC[m] = prop.table(table(V(g_rX_final)$coop[V(g_rX_final)$initial_coop==0]))["1"]
+      degreeC[m] = mean(igraph::degree(g_rX_final)[V(g_rX_final)$coop==1],na.rm=TRUE)
+      degreeD[m] = mean(igraph::degree(g_rX_final)[V(g_rX_final)$coop==0],na.rm=TRUE)
+      meanConversionToD[m] = mean(result[result$round>=2,]$meanConversionToD, na.rm=TRUE)
+      meanConversionToC[m] = mean(result[result$round>=2,]$meanConversionToC, na.rm=TRUE)
+      degreeLost[m] = result[result$round==10,]$degreeLost
+      degreeLostC[m] = result[result$round==10,]$degreeLostC
+      degreeLostD[m] = result[result$round==10,]$degreeLostD
+  
+    }
+    
+df.netIntLowDegree = rbind(df.netIntLowDegree,
+                  data.frame(
+                    coopFrac = coopFrac,
+                    avgCoop = avgCoop,
+                    avgCoopFinal = avgCoopFinal,
+                    percentIsolation = percentIsolation,
+                    isolation = isolation,
+                    percentIsolatedD = percentIsolatedD,
+                    nCommunities = nCommunities,
+                    communitySize = communitySize,
+                    assortativityInitial = assortativityInitial,
+                    assortativityFinal = assortativityFinal,
+                    conversionRate = conversionRate,
+                    conversionToD = conversionToD, 
+                    conversionToC = conversionToC, 
+                    degreeC = degreeC, 
+                    degreeD = degreeD,
+                    meanConversionToD = meanConversionToD, 
+                    meanConversionToC = meanConversionToC,
+                    degreeLost = degreeLost,
+                    degreeLostC = degreeLostC,
+                    degreeLostD = degreeLostD
+                    ))
+plot(g_r0,vertex.color=V(g_rX_final)$initial_coop,vertex.label=ifelse(is.na(V(g_rX_final)$initial_coop),"NA",ifelse(V(g_rX_final)$initial_coop==1,"C","D")),main=paste("fracCoop=",frac,", round 0",sep=""))
+plot(g_rX_final,vertex.color=V(g_rX_final)$initial_coop,vertex.label=ifelse(is.na(V(g_rX_final)$initial_coop),"NA",ifelse(V(g_rX_final)$initial_coop==1,"C","D")),main=paste("fracCoop=",frac,", final round",sep=""))
+}
+
+sum.netIntLowDegree <- data.frame(
+  df.netIntLowDegree %>% 
+    group_by(coopFrac) %>%
+      summarise(
+        mean.isolation = mean(isolation),
+        ci.isolation   = 1.96 * sd(isolation)/sqrt(n()),
+        mean.percentIsolation = mean(percentIsolation),
+        ci.percentIsolation   = 1.96 * sd(percentIsolation)/sqrt(n()),
+        mean.percentIsolatedD = mean(percentIsolatedD,na.rm=TRUE),
+        ci.percentIsolatedD   = 1.96 * sd(percentIsolatedD,na.rm=TRUE)/sqrt(sum(isolation)),
+        mean.avgCoop = mean(avgCoop,na.rm=TRUE),
+        ci.avgCoop   = 1.96 * sd(avgCoop,na.rm=TRUE)/sqrt(n()),
+        mean.avgCoopFinal = mean(avgCoopFinal,na.rm=TRUE),
+        ci.avgCoopFinal   = 1.96 * sd(avgCoopFinal,na.rm=TRUE)/sqrt(n()),
+        mean.nCommunities = mean(nCommunities,na.rm=TRUE),
+        ci.nCommunities   = 1.96 * sd(nCommunities,na.rm=TRUE)/sqrt(n()),
+        mean.communitySize = mean(communitySize,na.rm=TRUE),
+        ci.communitySize   = 1.96 * sd(communitySize,na.rm=TRUE)/sqrt(n()),
+        mean.assortativityInitial = mean(assortativityInitial,na.rm=TRUE),
+        ci.assortativityInitial   = 1.96 * sd(assortativityInitial,na.rm=TRUE)/sqrt(n()),
+        mean.assortativityFinal = mean(assortativityFinal,na.rm=TRUE),
+        ci.assortativityFinal   = 1.96 * sd(assortativityFinal,na.rm=TRUE)/sqrt(n()),
+        mean.conversionRate = mean(conversionRate,na.rm=TRUE),
+        ci.conversionRate   = 1.96 * sd(conversionRate,na.rm=TRUE)/sqrt(n()),
+        mean.conversionToD = mean(conversionToD,na.rm=TRUE),
+        ci.conversionToD   = 1.96 * sd(conversionToD,na.rm=TRUE)/sqrt(n()),
+        mean.conversionToC = mean(conversionToC,na.rm=TRUE),
+        ci.conversionToC   = 1.96 * sd(conversionToC,na.rm=TRUE)/sqrt(n()),
+        mean.degreeC = mean(degreeC,na.rm=TRUE),
+        ci.degreeC   = 1.96 * sd(degreeC,na.rm=TRUE)/sqrt(n()),
+        mean.degreeD = mean(degreeD,na.rm=TRUE),
+        ci.degreeD   = 1.96 * sd(degreeD,na.rm=TRUE)/sqrt(n()),
+        mean.meanConversionToD = mean(meanConversionToD,na.rm=TRUE),
+        ci.meanConversionToD   = 1.96 * sd(meanConversionToD,na.rm=TRUE)/sqrt(n()),
+        mean.meanConversionToC = mean(meanConversionToC,na.rm=TRUE),
+        ci.meanConversionToC   = 1.96 * sd(meanConversionToC,na.rm=TRUE)/sqrt(n()),
+        mean.degreeLost = mean(degreeLost,na.rm=TRUE),
+        ci.degreeLost   = 1.96 * sd(degreeLost,na.rm=TRUE)/sqrt(n()),
+        mean.degreeLostC = mean(degreeLostC,na.rm=TRUE),
+        ci.degreeLostC   = 1.96 * sd(degreeLostC,na.rm=TRUE)/sqrt(n()),
+        mean.degreeLostD = mean(degreeLostD,na.rm=TRUE),
+        ci.degreeLostD   = 1.96 * sd(degreeLostD,na.rm=TRUE)/sqrt(n())
+        )
+  )
+
+kable(sum.netIntLowDegree[c(1:9)]) %>% kableExtra::kable_styling(font_size = 10)
+kable(sum.netIntLowDegree[c(1,10:17)]) %>% kableExtra::kable_styling(font_size = 10) 
+kable(sum.netIntLowDegree[c(1,18:25)]) %>% kableExtra::kable_styling(font_size = 10) 
+kable(sum.netIntLowDegree[c(1,26:33)]) %>% kableExtra::kable_styling(font_size = 10) 
+kable(sum.netIntLowDegree[c(1,34:ncol(sum.netIntLowDegree))]) %>% kableExtra::kable_styling(font_size = 10) 
+
+compare_means(percentIsolation ~ coopFrac, data=df.netIntLowDegree)
+compare_means(avgCoop ~ coopFrac, data=df.netIntLowDegree)
+compare_means(avgCoopFinal ~ coopFrac, data=df.netIntLowDegree)
+compare_means(nCommunities ~ coopFrac, data=df.netIntLowDegree)
+compare_means(communitySize ~ coopFrac, data=df.netIntLowDegree)
+compare_means(assortativityInitial ~ coopFrac, data=df.netIntLowDegree)
+compare_means(assortativityFinal ~ coopFrac, data=df.netIntLowDegree)
+compare_means(conversionRate ~ coopFrac, data=df.netIntLowDegree)
+compare_means(conversionToD ~ coopFrac, data=df.netIntLowDegree)
+compare_means(conversionToC ~ coopFrac, data=df.netIntLowDegree)
+compare_means(degreeC ~ coopFrac, data=df.netIntLowDegree)
+compare_means(degreeD ~ coopFrac, data=df.netIntLowDegree)
+compare_means(meanConversionToD ~ coopFrac, data=df.netIntLowDegree)
+compare_means(meanConversionToC ~ coopFrac, data=df.netIntLowDegree)
+compare_means(degreeLost ~ coopFrac, data=df.netIntLowDegree)
+compare_means(degreeLostC ~ coopFrac, data=df.netIntLowDegree)
+compare_means(degreeLostD ~ coopFrac, data=df.netIntLowDegree)
+
+g.netIntLowDegree = ggbarplot(data=df.netIntLowDegree, x="coopFrac", y="percentIsolation", add = "mean_se") +
+  stat_compare_means(ref.group = "0", label = "p.signif", label.y = 0.098, method="t.test") +  
+  labs(
+    title = "Isolation when defectors are assigned to high-degree nodes",
+    x = "Proportion of high-degree nodes assigned to defectors",
+    y = "Propoption of ever-isolated individuals") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  coord_cartesian(ylim=c(0,0.10))
+g.netIntLowDegree
+
+plot(df.netIntLowDegree$assortativityInitial, df.netIntLowDegree$percentIsolation)
+summary(lm(percentIsolation ~ assortativityInitial, data=df.netIntLowDegree))
+```
+
+##Several explanations
+###More beneficial to break links
+####Mathematically, the expected benefit of breaking/not making new links only depends on the total number of cooperators and defectors, not the number of C and D around an ego
+###Altruism: making/retaining links even when there is no benefit
+####Degree changes in initial defectors are no different across conditions
+###Evolution of cooperation
+####This seems to occur regardless of initial defector/cooperator position (the same number of C's become D's, and the same number of D's become C's)
+###D has more links to start
+####This seems to be the most plausible explanation. Regardless of the network position, initial D's ends up becoming C's in most cases, but not without a cost: many D's tend to lose links first before reaching equilibrium, so networks that have the greatest D degrees may have the least isolation. 
+
+
+

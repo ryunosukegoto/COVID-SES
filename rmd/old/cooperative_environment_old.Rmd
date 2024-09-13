@@ -1,0 +1,161 @@
+---
+title: "Does a cooperative environment prevent isolation?"
+author: "Ryunosuke Goto"
+date: "10/26/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+
+#to run RMD
+#library(rmarkdown)
+#rootdir <- system("git rev-parse --show-toplevel", intern=TRUE)[1]
+#rmarkdown::render(paste(rootdir,"rmd/cooperative_environment.Rmd", sep="/"))
+
+
+knitr::opts_chunk$set(echo = TRUE)
+
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(arsenal)
+library(gridExtra)
+library(ggpubr)
+library(cowplot)
+library(grid)
+library(MASS)
+library(knitr)
+library(igraph)
+library(data.table)
+library(Rtsne)
+library(caret)
+library(pdp)
+library(dtwclust)
+library(randomForest)
+
+rootdir <- system("git rev-parse --show-toplevel", intern=TRUE)[1]
+
+source(paste(rootdir,"R/degree.R",sep="/"))
+sampleList <- degree(redo=TRUE) #set redo=TRUE to update
+
+sample.reg = sampleList[[4]]
+sample.long = sampleList[[7]]
+
+#define isolation
+sample.reg$isolated = ifelse(sample.reg$degree.1<=1 | sample.reg$degree.2<=1 | sample.reg$degree.3<=1 | sample.reg$degree.4<=1 | sample.reg$degree.5<=1| sample.reg$degree.6<=1 | sample.reg$degree.7<=1 | sample.reg$degree.8<=1 | sample.reg$degree.9<=1 | sample.reg$degree.10<=1, 1, 0)
+```
+
+#Cooperation by alters and ego's behavior
+```{r regression}
+sample.reg$inequality = relevel(factor(sample.reg$inequality),ref="none")
+
+#inequality
+reg.everIsolated.inequality = miceadds::glm.cluster(isolated ~ alterBehavior.1*behavior.1, 
+                                                    data = sample.reg, 
+                                                    cluster = "gameID",
+                                                    family = binomial(link = "logit"))
+alpha <- 0.05
+x.everIsolated.inequality <- summary(reg.everIsolated.inequality)
+y.everIsolated.inequality <- confint(reg.everIsolated.inequality, level=1-alpha)
+coef.everIsolated.inequality <- x.everIsolated.inequality[,1]
+LowerCL.everIsolated.inequality <- y.everIsolated.inequality[,1]
+UpperCL.everIsolated.inequality <- y.everIsolated.inequality[,2]
+p.everIsolated.inequality <-x.everIsolated.inequality[,4]
+#odds ratio
+z.everIsolated.inequality <- cbind(exp(coef.everIsolated.inequality["alterBehavior.1"]), exp(LowerCL.everIsolated.inequality["alterBehavior.1"]), exp(UpperCL.everIsolated.inequality["alterBehavior.1"]), p.everIsolated.inequality["alterBehavior.1"])
+z.everIsolated.inequality = data.frame(z.everIsolated.inequality)
+names(z.everIsolated.inequality) = c("OR", "Lower CL", "Upper CL", "P-value")
+z.everIsolated.inequality
+
+```
+
+#Trajectory plot
+```{r trajectory_plot, echo=FALSE}
+#trajectories
+sample.i = sample.long[sample.long$degree<=1 & sample.long$round!=0,]
+sample.i$round = as.numeric(sample.i$round) - 1
+isolationRound <- aggregate(round ~ ID, data = sample.i, FUN = min, na.rm = TRUE)
+colnames(isolationRound)[c(1:2)] = c("ID","roundZero")
+
+#subtract the minimum round for which degree is 0 to obtain rounds to isolation
+sample.traj = merge(clust.res[clust.res$round!=0,], isolationRound, by="ID", all.x=TRUE)
+sample.traj$round = as.numeric(sample.traj$round) - 1
+sample.traj$roundToIsolation = sample.traj$round - sample.traj$roundZero
+
+#remove all "positive" rounds
+sample.traj = subset(sample.traj, sample.traj$roundToIsolation<=0)
+
+
+sum_traj <- sample.traj %>% 
+  group_by(roundToIsolation) %>%
+  summarise(mean.degree = mean(degree, na.rm = TRUE),
+            ci.degree   = 1.96 * sd(degree, na.rm = TRUE)/sqrt(n()))
+
+
+
+sum_alterBehavior <- sample.traj %>% 
+  group_by(roundToIsolation) %>%
+  summarise(mean = mean(alterBehavior, na.rm=TRUE),
+            ci   = 1.96 * sd(alterBehavior, na.rm=TRUE)/sqrt(n()))
+
+
+cc.compare = merge(data.frame(sum_traj),data.frame(sum_alterBehavior),by="roundToIsolation")
+
+scale=0.1
+
+g.compare = ggplot(data=cc.compare, aes(x=roundToIsolation,y=mean.degree)) +
+  geom_line(aes(color="Degree")) +
+  geom_errorbar(aes(x = roundToIsolation, ymin = mean.degree - ci.degree, ymax = mean.degree + ci.degree, color="Degree"),width = .1) +
+  geom_point(aes(x = roundToIsolation, y=mean.degree, color="Degree"),size = 4) +
+  geom_line(aes(y = mean/scale, color="Percentage of alters who cooperated")) +
+  geom_errorbar(aes(x = roundToIsolation, ymin = mean/scale - ci/scale, ymax = mean/scale + ci/scale, color="Percentage of alters who cooperated"),width = .1) +
+  geom_point(aes(x = roundToIsolation, y=mean/scale, color="Percentage of alters who cooperated"),size = 4) +
+  scale_y_continuous(
+    # Features of the first axis
+    name = "Degree",
+    # Add a second axis and specify its features
+    sec.axis = sec_axis(~.*scale, name="Percentage of alters who cooperated")) +
+  labs(
+    title = "Trajectories of degrees and cooperative environment",
+    x = "Round to isolation",
+    y = "Degree",
+    color = "") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  scale_color_manual(values = c("orange2", "gray30"))
+
+g.compare
+```
+
+
+
+
+#Cooperative environment and isolation, at the gameID level
+```{r}
+meanDegree = aggregate(degree.0 ~ gameID, data=sample.reg, FUN=mean, na.rm=TRUE)
+sdDegree = aggregate(degree.0 ~ gameID, data=sample.reg, FUN=sd, na.rm=TRUE)
+isolated = aggregate(isolated ~ gameID, data=sample.reg, FUN=mean, na.rm=TRUE)
+sample.reg2 = sample.reg
+sample.reg2 = sample.reg2 %>%
+  mutate(cooperative =
+           case_when(
+             behavior.1=="C" ~ 1,
+             behavior.1=="D" ~ 0
+           ))
+cooperative = aggregate(cooperative ~ gameID, data=sample.reg2, FUN=mean, na.rm=TRUE)
+
+degreePlot = data.frame(
+  meanDegree = meanDegree,
+  sdDegree = sdDegree,
+  isolated = isolated,
+  cooperative = cooperative
+)
+
+ggplot(data=degreePlot, aes(x=cooperative.cooperative, y=isolated.isolated)) +
+  geom_point(aes())
+
+reg = glm(isolated.isolated ~ cooperative.cooperative, 
+      data = degreePlot, 
+      family = gaussian(link = "identity"))
+summary(reg)
+```

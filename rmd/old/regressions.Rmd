@@ -1,0 +1,126 @@
+---
+title: "Does a cooperative environment affect isolation?"
+author: "Ryunosuke Goto"
+date: "10/19/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+
+#to run RMD
+#library(rmarkdown)
+#rootdir <- system("git rev-parse --show-toplevel", intern=TRUE)[1]
+#rmarkdown::render(paste(rootdir,"rmd/cooperative_environment_degree2_invisible.Rmd", sep="/"))
+
+knitr::opts_chunk$set(echo = TRUE)
+
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(arsenal)
+library(gridExtra)
+library(ggpubr)
+library(cowplot)
+library(grid)
+library(MASS)
+library(knitr)
+library(igraph)
+library(data.table)
+library(Rtsne)
+library(caret)
+library(pdp)
+library(dtwclust)
+library(randomForest)
+library(igraph)
+
+rootdir <- system("git rev-parse --show-toplevel", intern=TRUE)[1]
+
+source(paste(rootdir,"R/degree.R",sep="/"))
+sampleList <- degree(redo=TRUE) #set redo=TRUE to update
+
+g.isolation = sampleList[[3]]
+sample.wide = data.frame(sampleList[[4]])
+cdata.2 = sampleList[[5]]
+ndata.2 = sampleList[[6]]
+
+#define isolation
+sample.wide$isolated = ifelse(sample.wide$degree.1<=2 | sample.wide$degree.2<=2 | sample.wide$degree.3<=2 | sample.wide$degree.4<=2 | sample.wide$degree.5<=2| sample.wide$degree.6<=2 | sample.wide$degree.7<=2 | sample.wide$degree.8<=2 | sample.wide$degree.9<=2 | sample.wide$degree.10<=2, 1, 0)
+
+
+datafile <- paste(rootdir,"data/node_prac_1216.Rdata", sep="/")
+  
+load(datafile)
+    
+sample.prac = ndata[ndata$isAI==FALSE,]
+
+sample.prac$ID = paste(sample.prac$id,sample.prac$gameID,sep="_")
+  
+sample.prac <- sample.prac %>%
+  mutate(showScore = 
+           case_when(
+             showScore == "true" ~ 1,
+             showScore == "false" ~ 0
+           ))
+
+sample.prac <- sample.prac %>%
+  mutate(behavior = 
+           case_when(
+             behavior == "C" ~ 1,
+             behavior == "D" ~ 0
+           ))
+
+sample.prac$initialGini = NULL
+sample.prac <- sample.prac %>%
+  mutate(initialGini = 
+           case_when(
+             scoreA == 500 ~ 0,
+             scoreA == 700 ~ 0.2,
+             scoreA == 850 ~ 0.2,
+             scoreA == 1150 ~ 0.4
+           ))
+
+
+
+#add in wealth difference variable here
+sample.prac.wide = stats::reshape(data=sample.prac[c("ID","round","behavior","showScore","initialGini","cumulativePayoff")],
+                          v.names=c('behavior','cumulativePayoff'),
+                          timevar='round',
+                          idvar='ID',
+                          direction='wide')
+
+sample.prac.wide = rename(sample.prac.wide,behavior.p1=behavior.1)
+sample.prac.wide = rename(sample.prac.wide,behavior.p2=behavior.2)
+
+sample.prac.wide = merge(sample.prac.wide, sample.wide[c("ID","behavior.1","visibleWealth","gini")], by=c("ID"), all.x=TRUE)
+
+sample.prac.wide <- sample.prac.wide %>%
+  mutate(behavior.1 = 
+           case_when(
+             behavior.1 == "C" ~ 1,
+             behavior.1 == "D" ~ 0
+           ))
+  
+```
+
+```{r}
+#for simulation of practice round data (predict C/D in practice round 1)
+reg0 = glm(behavior.p1 ~ 1,data=sample.prac.wide,family = binomial(link="logit"))
+coef(reg0)
+
+#for simulation of practice round data (predict C/D in practice round 2)
+#add wealth of ego and wealth of neighbors in regression if available
+reg1 = glm(behavior.p2 ~ I(behavior.p1),data=sample.prac.wide,family = binomial(link="logit"))
+coef(reg1)
+
+#predict C/D in round 1
+reg2inv = glm(behavior.1 ~ I(behavior.p1) + I(behavior.p2),
+              data=sample.prac.wide[sample.prac.wide$visibleWealth==0,],
+              family = binomial(link="logit"))
+summary(reg2inv)
+coef(reg2inv)
+reg2vis = glm(behavior.1 ~ I(behavior.p1) + I(behavior.p2) + initialGini,
+              data=sample.prac.wide[sample.prac.wide$visibleWealth==1,],
+              family = binomial(link="logit"))
+summary(reg2vis)
+coef(reg2vis)
+```

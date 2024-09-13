@@ -1,0 +1,92 @@
+---
+title: "Graphs"
+author: "Ryunosuke Goto"
+date: "10/19/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+
+#to run RMD
+#library(rmarkdown)
+#rootdir <- system("git rev-parse --show-toplevel", intern=TRUE)[1]
+#rmarkdown::render(paste(rootdir,"rmd/graphs.Rmd", sep="/"))
+
+knitr::opts_chunk$set(echo = TRUE)
+
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(arsenal)
+library(gridExtra)
+library(ggpubr)
+library(cowplot)
+library(grid)
+library(MASS)
+library(knitr)
+library(igraph)
+library(data.table)
+library(Rtsne)
+library(caret)
+library(pdp)
+library(dtwclust)
+library(randomForest)
+
+rootdir <- system("git rev-parse --show-toplevel", intern=TRUE)[1]
+
+source(paste(rootdir,"R/degree.R",sep="/"))
+sampleList <- degree(redo=TRUE) #set redo=TRUE to update
+
+g.isolation = sampleList[[3]]
+sample.wide = sampleList[[4]]
+
+#define isolation
+sample.wide$isolated = ifelse(sample.wide$degree.1<=1 | sample.wide$degree.2<=1 | sample.wide$degree.3<=1 | sample.wide$degree.4<=1 | sample.wide$degree.5<=1| sample.wide$degree.6<=1 | sample.wide$degree.7<=1 | sample.wide$degree.8<=1 | sample.wide$degree.9<=1 | sample.wide$degree.10<=1, 1, 0)
+```
+#Example of a network with isolation
+```{r pressure, echo=FALSE}
+getmode <- function(v){
+  uniqv <- unique(v)
+  uniqv[which.max(tabulate(match(v,uniqv)))]
+}
+
+n=1
+round=NULL
+gameID=NULL
+vertex=NULL
+coefLocal=NULL
+coefGlobal=NULL
+degree=NULL
+for(i in 1:length(g.isolation)){
+    round[[i]] = as.factor(V(g.isolation[[i]])$round)
+    gameID[[i]] = as.factor(V(g.isolation[[i]])$gameID)
+    vertex[[i]] = V(g.isolation[[i]])$name
+    coefLocal[[i]] = transitivity(g.isolation[[i]], type="local")
+    coefGlobal[[i]] = rep(transitivity(g.isolation[[i]], type="global"),length(V(g.isolation[[i]])$round))
+    degree[[i]] = igraph::degree(g.isolation[[i]])
+    n=n+1
+}
+
+gameID = unlist(lapply(gameID, getmode))
+
+
+
+#which gameID has isolated individuals?
+#sample.wide[sample.wide$isolated==1,]$gameID
+#sample.wide[sample.wide$isolated==0,]$gameID
+
+g.isolation.1 = g.isolation[gameID=="D2013-11-19-02_4737"]
+
+
+#for(i in unique(sample.wide[sample.wide$isolated==1,]$gameID)){
+#  g.isolation.1 = g.isolation[gameID==i]
+#  plot(g.isolation[[1]])
+#}
+#
+
+for(i in 1:length(g.isolation.1)){
+   plot(g.isolation.1[[i]])
+}
+
+```
+

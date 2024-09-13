@@ -1,0 +1,755 @@
+---
+title: "Mediation analyses"
+author: "Ryunosuke Goto"
+date: "6/7/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+
+#to run RMD
+#library(rmarkdown)
+#rootdir <- system("git rev-parse --show-toplevel", intern=TRUE)[1]
+#rmarkdown::render(paste(rootdir,"rmd/ses.Rmd", sep="/"))
+
+knitr::opts_chunk$set(warning=FALSE, message=TRUE, echo=TRUE)
+
+library(lfe)
+library(stargazer)
+library(knitr)
+library(plm)
+library(latex2exp)
+library(ggplot2)
+library(ggthemes)
+library(mvtnorm)
+library(kableExtra)
+library(data.table) 
+library(readxl)  
+library(dplyr)
+library(dotwhisker)
+library(latex2exp)
+library(parallel) 
+library(geepack)
+library(CMAverse)
+library(ggpubr)
+library(randomForest)
+library(mlbench)
+library(caret)
+library(e1071)
+library(missForest)
+library(gtsummary)
+library(knitr)
+library(gt)
+library(itertools)
+library(missForest)
+library(viridis)
+
+detectCores()
+
+rootdir <- system("git rev-parse --show-toplevel", intern=TRUE)[1]
+
+source(paste(rootdir,"R/countyData.R",sep="/"))
+
+options(timeout=2000)
+sdf <- countyData(redo=FALSE) #set redo=TRUE to update
+
+write.csv(sdf,paste(rootdir,"sdf.csv",sep="/"))
+
+```
+
+
+##Scatterplots of exposure, mediators, and outcome
+```{r scatterplots, cache=FALSE, warning=FALSE, message=FALSE, echo=FALSE, results='hide', fig.width=15, fig.height=15}
+#####scatterplots#####
+#create dataset 
+sdf_l <- subset(sdf, state %in% c("AL","AK","AZ","CA","CO","CT","DE",
+                              "FL","GA","HI","ID","IL","IN","DC", 
+                              "KS","KY","LA","ME","MD","MA","MI",
+                              "MN","MT","MS","MO","NV","NH","NJ",
+                              "NM","NY","NC","OH","OK","OR","PA",
+                              "RI","SC","TN","TX","VA","VT","WA",
+                              "WV","WI", #lockdown states
+                              "AR","IA","NE","ND","SD","UT","WY" #no lockdown states
+                              )) 
+
+#pctPoverty and deaths
+fig2  <-  ggpubr::ggscatter(data=sdf_l, x="pctPoverty",y="deaths_2021", fill="Black", color="Black",
+                            xlab = "Poverty rate (%)\n", ylab = "COVID-19 deaths per 100,000 in 2021",
+                           add = "reg.line", conf.int = TRUE, 
+                           cor.coef = TRUE, cor.method = "pearson",
+                           add.params = list(color = "grey45",fill = "grey45"),
+                           cor.coeff.args = list(method = "pearson", label.x = 25, label.y = 750, size = 5)
+                           ) 
+
+#pctPoverty and Series_Complete_Pop_Pct
+fig3  <-  ggpar(ggpubr::ggscatter(data=sdf_l, x="pctPoverty",y="Series_Complete_Pop_Pct", fill="Black", color="Black",
+                            xlab = "Poverty rate (%)\n", ylab = "Proportion fully vaccinated \nby December 31, 2021 (%)",
+                           add = "reg.line", conf.int = TRUE, 
+                           cor.coef = TRUE, cor.method = "pearson",
+                           add.params = list(color = "grey45",fill = "grey45"),
+                           cor.coeff.args = list(method = "pearson", label.x = 17, label.y = 13, size = 5)
+                           ) 
+                #, ylim = c(0,110)
+)
+
+#Series_Complete_Pop_Pct and deaths
+fig4  <-  ggpar(ggpubr::ggscatter(data=sdf_l, x="Series_Complete_Pop_Pct",y="deaths_2021", fill="Black", color="Black",
+                            xlab = "Proportion fully vaccinated \nby December 31, 2021 (%)", ylab = "COVID-19 deaths per 100,000 in 2021",
+                           add = "reg.line", conf.int = TRUE, 
+                           cor.coef = TRUE, cor.method = "pearson",
+                           add.params = list(color = "grey45",fill = "grey45"),
+                           cor.coeff.args = list(method = "pearson", label.x = 35, label.y = 750, size = 5)
+                           ) 
+                #, ylim = c(0,1500)
+)
+
+max(sdf_l$deaths_2021, na.rm=TRUE)  
+sdf_l[sdf_l$deaths_2021==max(sdf_l$deaths_2021, na.rm=TRUE),]$fips  
+min(sdf_l$deaths_2021, na.rm=TRUE)
+sdf_l[sdf_l$deaths_2021==min(sdf_l$deaths_2021, na.rm=TRUE),]$fips
+
+max(sdf_l$pctPoverty, na.rm=TRUE)
+sdf_l[sdf_l$pctPoverty==max(sdf_l$pctPoverty, na.rm=TRUE),]$fips
+min(sdf_l$pctPoverty, na.rm=TRUE)
+sdf_l[sdf_l$pctPoverty==min(sdf_l$pctPoverty, na.rm=TRUE),]$fips
+
+max(sdf_l$Series_Complete_Pop_Pct, na.rm=TRUE)
+sdf_l[sdf_l$Series_Complete_Pop_Pct==max(sdf_l$Series_Complete_Pop_Pct, na.rm=TRUE),]$fips
+min(sdf_l$Series_Complete_Pop_Pct, na.rm=TRUE)
+sdf_l[sdf_l$Series_Complete_Pop_Pct==min(sdf_l$Series_Complete_Pop_Pct, na.rm=TRUE),]$fips
+
+pdf(sprintf("%s/figures/scatterplots.pdf",rootdir), width=8, height=8)
+ggarrange(ggarrange(fig2, ncol = 1, labels = c("A")),        
+          ggarrange(fig4, fig3, ncol = 2, labels = c("B", "C")), 
+          nrow = 2                                   
+          ) 
+dev.off()
+
+ggarrange(ggarrange(fig2, ncol = 1, labels = c("A")),        
+          ggarrange(fig4, fig3, ncol = 2, labels = c("B", "C")), 
+          nrow = 2                                   
+          ) 
+
+```
+
+
+##Associations of exposure, mediators, and outcome
+```{r regressions, cache=FALSE, warning=FALSE, message=FALSE, echo=FALSE, results='hide'}
+#Variable selection
+set.seed(123)
+Y_2021 = "deaths_2021"
+E = "pctPoverty"
+M_vax = c(
+  "Series_Complete_Pop_Pct"
+)
+C = c("PropMale",
+      "PropAbove65",
+      "no.college.diploma",
+      "native",
+      "asian",
+      "black",
+      "white",
+      "hispanic",
+      "state"
+) 
+
+d = sdf[c("fips",Y_2021,E,M_vax,C)]
+
+
+createfmla <- function(yvar, xvars) {
+  rhs <- paste(xvars, collapse=" + ")
+  return(as.formula(paste(yvar, "~", rhs, sep=" ")))
+}
+createint <- function(Y,E,M) {
+  list <- NULL
+  for(i in 1:length(M)){
+    list <- c(list,paste(E,M[i], sep="*"))
+  }
+  rhs <- paste(list, collapse=" + ")
+  return(as.formula(paste(Y, "~", rhs, sep=" ")))
+}
+
+set.seed(123)
+
+
+#create dataset
+d_l <- subset(d, state %in% c("AL","AK","AZ","CA","CO","CT","DE",
+                              "FL","GA","HI","ID","IL","IN","DC", 
+                              "KS","KY","LA","ME","MD","MA","MI",
+                              "MN","MT","MS","MO","NV","NH","NJ",
+                              "NM","NY","NC","OH","OK","OR","PA",
+                              "RI","SC","TN","TX","VA","VT","WA",
+                              "WV","WI", #lockdown states
+                              "AR","IA","NE","ND","SD","UT","WY" #no lockdown states
+                              ))
+
+
+#impute with RF
+set.seed(123)
+d_l_mf <- d_l
+d_l_mf$state <- factor(d_l_mf$state)
+d_l_mf <- subset(d_l_mf, select=-c(fips))
+dimp <- missForest(xmis = d_l_mf, ntree=100, maxiter = 10, parallelize = 'no')
+# dimp$OOBerror
+# dimp$error
+d_l_rf<-cbind(d_l$fips, dimp$ximp)
+
+
+createfmla <- function(yvar, xvars) {
+  rhs <- paste(xvars, collapse=" + ")
+  return(as.formula(paste(yvar, "~", rhs, sep=" ")))
+}
+
+
+#Exposure-outcome association
+reg_ye_2021 = glm(createfmla(Y_2021, c(E,C)), family = gaussian(link="identity"), data = d_l_rf)
+reg_ye_2021.beta <- coef(reg_ye_2021)
+reg_ye_2021.SE <- coef(summary(reg_ye_2021))[, 2]
+reg_ye_2021.p <- coef(summary(reg_ye_2021))[, 4]
+reg_ye_2021.lcl <- reg_ye_2021.beta - qnorm(0.975) * reg_ye_2021.SE
+reg_ye_2021.ucl <- reg_ye_2021.beta + qnorm(0.975) * reg_ye_2021.SE
+
+#Mediator-outcome association
+reg_ym_vax = glm(createfmla(Y_2021, c(M_vax,C)), family = gaussian(link="identity"), data = d_l_rf)
+reg_ym_vax.beta <- coef(reg_ym_vax)
+reg_ym_vax.SE <- coef(summary(reg_ym_vax))[, 2]
+reg_ym_vax.p <- coef(summary(reg_ym_vax))[, 4]
+reg_ym_vax.lcl <- reg_ym_vax.beta - qnorm(0.975) * reg_ym_vax.SE
+reg_ym_vax.ucl <- reg_ym_vax.beta + qnorm(0.975) * reg_ym_vax.SE
+
+
+```
+
+```{r}
+#excess covid deaths per 100,000 (in 2021) for every 10% increase in poverty
+kable(cbind(reg_ye_2021.beta,reg_ye_2021.lcl,reg_ye_2021.ucl,reg_ye_2021.p/10)[2,]*10)
+#reduction in covid deaths per 100,000 (in 2021) for every 10% increase in vaccination rate
+kable(cbind(reg_ym_vax.beta,reg_ym_vax.lcl,reg_ym_vax.ucl,reg_ym_vax.p/10)[2,]*10)
+```
+
+
+##US heatmap of exposure, mediators, and outcome
+```{r maps, cache=FALSE, results='hide', echo=FALSE, fig.width=8, fig.height=20}
+#####maps#####
+f.map.deaths_2021 = usmap::plot_usmap(data = sdf_l, values = "deaths_2021",  color = "black", labels=FALSE, size=0.1) + 
+  scale_fill_gradient2(low = "white", mid="red4", high = "black", midpoint = max(sdf_l$deaths_2021, na.rm=TRUE)/2, name = "", label = scales::comma) +
+  labs(title="COVID-19 deaths per 100,000") +
+  theme(plot.title = element_text(hjust = 0.5,size=16))
+
+f.map.pov = usmap::plot_usmap(data = sdf_l, values = "pctPoverty",  color = "black", labels=FALSE, size=0.1) + 
+  scale_fill_gradient2(low = "white", mid="blue4", high = "black", midpoint = max(sdf_l$pctPoverty, na.rm=TRUE)/2, name = "", label = scales::comma) +
+  labs(title="Poverty rate (%)") +
+  theme(plot.title = element_text(hjust = 0.5,size=16))
+
+f.map.Series_Complete_Pop_Pct = usmap::plot_usmap(data = sdf_l, values = "Series_Complete_Pop_Pct",  color = "black", labels=FALSE, size=0.1) + 
+  scale_fill_gradient2(low = "white", mid="chartreuse4", high = "black", midpoint = max(sdf_l$Series_Complete_Pop_Pct, na.rm=TRUE)/2, name = "", label = scales::comma) +
+  labs(title="Proportion fully vaccinated by December 31, 2021 (%)") +
+  theme(plot.title = element_text(hjust = 0.5,size=16))
+
+pdf(sprintf("%s/figures/map.pdf",rootdir), width=8, height=20)
+gridExtra::grid.arrange(f.map.deaths_2021,f.map.pov,f.map.Series_Complete_Pop_Pct,nrow=3)
+dev.off()
+
+gridExtra::grid.arrange(f.map.deaths_2021,f.map.pov,f.map.Series_Complete_Pop_Pct,nrow=3)
+```
+
+
+##Basic characteristics
+```{r table, cache=FALSE, echo=FALSE}
+#summary
+sdf_l <- subset(sdf, state %in% c("AL","AK","AZ","CA","CO","CT","DE",
+                              "FL","GA","HI","ID","IL","IN","DC", 
+                              "KS","KY","LA","ME","MD","MA","MI",
+                              "MN","MT","MS","MO","NV","NH","NJ",
+                              "NM","NY","NC","OH","OK","OR","PA",
+                              "RI","SC","TN","TX","VA","VT","WA",
+                              "WV","WI", #lockdown states
+                              "AR","IA","NE","ND","SD","UT","WY" #no lockdown states
+                              )) 
+
+results <- sdf_l %>% select(PropAbove65, PropMale, 
+                          asian, hispanic, white, black, native,
+                          pctPoverty, no.college.diploma,
+                          Smokers_Percentage,DiabetesPercentage,obesity,
+                          copd, hbp, chd, stroke,
+                          Series_Complete_Pop_Pct,
+                          deaths_2021)
+tbl <- tbl_summary(results,
+            statistic = list(all_continuous() ~ "{mean} ({sd})",
+                     all_categorical() ~ "{n} / {N} ({p}%)"),
+            label = list(
+              PropAbove65 ~ "Proportion aged 65+ years (%)", 
+              PropMale ~ "Proportion of males (%)", 
+              asian ~ "Proportion of Asians, Native Hawaiians, or other Pacific Islanders, non-Hispanic (%)", 
+              hispanic ~ "Proportion of Hispanics (%)", 
+              white ~ "Proportion of non-Hispanic Whites (%)", 
+              black ~ "Proportion of non-Hispanic Blacks (%)", 
+              native ~ "Proportion of American Indians/Alaska Natives, non-Hispanic (%)", 
+              pctPoverty ~ "Proportion living in poverty (%)", 
+              no.college.diploma ~ "Proportion without 4+ years of college education (%)", 
+              Smokers_Percentage ~ "Proportion of smokers (%)", 
+              DiabetesPercentage ~ "Proportion of adults with diabetes (%)", 
+              obesity ~ "Proportion of obese adults (%)", 
+              copd ~ "Proportion of adults with chronic obstructive pulmonary disease (%)", 
+              hbp ~ "Proportion of adults with high blood pressure (%)", 
+              chd ~ "Proportion of adults with coronary heart disease (%)", 
+              stroke ~ "Proportion of adults with stroke (%)", 
+              Series_Complete_Pop_Pct ~ "Percent fully vaccinated by December 31st, 2021 (%)",
+              deaths_2021 ~ "COVID-19 deaths per 100,000 in April-December 2021"
+              ),
+            missing_text = "(Missing)",
+            digits = list(
+              PropAbove65 ~ c(1,1), 
+              PropMale ~ c(1,1), 
+              asian ~ c(1,1), 
+              hispanic ~ c(1,1),  
+              white ~ c(1,1),  
+              black ~ c(1,1),  
+              native ~ c(1,1), 
+              pctPoverty ~ c(1,1), 
+              no.college.diploma ~ c(1,1),  
+              Smokers_Percentage ~ c(1,1),  
+              DiabetesPercentage ~ c(1,1),  
+              obesity ~ c(1,1), 
+              copd ~ c(1,1), 
+              hbp ~ c(1,1), 
+              chd ~ c(1,1), 
+              stroke ~ c(1,1),  
+              Series_Complete_Pop_Pct ~ c(1,1),
+              deaths_2021 ~ c(1,1)
+              ),
+            percent = NULL)
+
+tbl %>%    
+  as_gt() %>%            
+  gt::gtsave(          
+    filename = sprintf("%s/tables/basic_characteristics.html",rootdir)
+  )
+
+tbl %>%    
+  as_gt()
+
+```
+
+
+##Mediation analysis of the SES-COVID-19 mortality association
+###Outcome: COVID-19 death rates in 2021
+###Mediators: vaccination rate up to December 31, 2021
+```{r mediation for vaccination, cache=FALSE, warning=FALSE, message=FALSE, results='hide'}
+#Variable selection
+set.seed(123)
+Y = "deaths_2021"
+E = "pctPoverty"
+M = c(
+  "Series_Complete_Pop_Pct"
+)
+C = c("PropMale",
+      "PropAbove65",
+      "no.college.diploma",
+      "native",
+      "asian",
+      "black",
+      "white",
+      "hispanic",
+      "state"
+) 
+
+d = sdf[c("fips",Y,E,M,C)]
+
+createfmla <- function(yvar, xvars) {
+  rhs <- paste(xvars, collapse=" + ")
+  return(as.formula(paste(yvar, "~", rhs, sep=" ")))
+}
+createint <- function(Y,E,M) {
+  list <- NULL
+  for(i in 1:length(M)){
+    list <- c(list,paste(E,M[i], sep="*"))
+  }
+  rhs <- paste(list, collapse=" + ")
+  return(as.formula(paste(Y, "~", rhs, sep=" ")))
+}
+
+set.seed(123)
+
+
+#create dataset
+d_l <- subset(d, state %in% c("AL","AK","AZ","CA","CO","CT","DE",
+                              "FL","GA","HI","ID","IL","IN","DC", 
+                              "KS","KY","LA","ME","MD","MA","MI",
+                              "MN","MT","MS","MO","NV","NH","NJ",
+                              "NM","NY","NC","OH","OK","OR","PA",
+                              "RI","SC","TN","TX","VA","VT","WA",
+                              "WV","WI", #lockdown states
+                              "AR","IA","NE","ND","SD","UT","WY" #no lockdown states
+                              ))
+
+# max(d_l$Series_Complete_Pop_Pct,na.rm=TRUE)
+# quantile(d_l$Series_Complete_Pop_Pct,0.90,na.rm=TRUE)
+# quantile(d_l$Series_Complete_Pop_Pct,0.75,na.rm=TRUE)
+# quantile(d_l$Series_Complete_Pop_Pct,0.50,na.rm=TRUE)
+
+#impute with RF
+set.seed(123)
+d_l_mf <- d_l
+d_l_mf$state <- factor(d_l_mf$state)
+d_l_mf <- subset(d_l_mf, select=-c(fips))
+dimp <- missForest(xmis = d_l_mf, ntree=100, maxiter = 10, parallelize = 'no')
+# dimp$OOBerror
+# dimp$error
+d_l_rf<-cbind(d_l$fips, dimp$ximp)
+
+createfmla <- function(yvar, xvars) {
+  rhs <- paste(xvars, collapse=" + ")
+  return(as.formula(paste(yvar, "~", rhs, sep=" ")))
+}
+
+set.seed(123)
+
+#g-formula approach
+
+#max values
+mval.list <- list()
+
+mval.list <- list(max(d_l$Series_Complete_Pop_Pct, na.rm=TRUE)) 
+fit_l <- cmest(
+  data=d_l_rf, model="gformula", 
+  outcome = Y, exposure = E, mediator = M, basec = C, 
+  yreg="linear", mreg=rep(list("linear"),length(M)),
+  astar = median(d_l$pctPoverty, na.rm=TRUE), a = median(d_l$pctPoverty, na.rm=TRUE)+10, 
+  EMint=TRUE,
+  mval = mval.list,
+  estimation = "imputation", multimp = FALSE,
+  inference = "bootstrap", nboot = 1000)
+res_mediation_max_vax <- data.frame(
+  "Statistic" = c("Total effect", "Controlled direct effect", "Proportion eliminated"),
+  "Effect" = 
+    round(c(summary(fit_l)$effect.pe["te"],summary(fit_l)$effect.pe["cde"],summary(fit_l)$effect.pe["pe"]),2),
+  "Lower CL" = 
+    round(c(summary(fit_l)$effect.ci.low["te"],summary(fit_l)$effect.ci.low["cde"],summary(fit_l)$effect.ci.low["pe"]),2),
+  "Upper CL" = 
+    round(c(summary(fit_l)$effect.ci.high["te"],summary(fit_l)$effect.ci.high["cde"],summary(fit_l)$effect.ci.high["pe"]),2),
+  "P-value" = 
+    round(c(summary(fit_l)$effect.pval["te"],summary(fit_l)$effect.pval["cde"],summary(fit_l)$effect.pval["pe"]),3)
+)
+
+res_mediation_max_vax %>% 
+  gt() %>%
+  cols_label(
+    Statistic = " ",
+    Lower.CL = "Lower CL",
+    Upper.CL = "Upper CL",
+    P.value = "P-value"
+  ) %>% gt::gtsave(          
+    filename = sprintf("%s/tables/mediation_max_vax.html",rootdir))
+
+#90th percentile
+mval.list <- list()
+mval.list <- list(quantile(d_l$Series_Complete_Pop_Pct,0.90,na.rm=TRUE))
+fit_l <- cmest(
+  data=d_l_rf, model="gformula", 
+  outcome = Y, exposure = E, mediator = M, basec = C, 
+  yreg="linear", mreg=rep(list("linear"),length(M)),
+  astar = median(d_l$pctPoverty, na.rm=TRUE), a = median(d_l$pctPoverty, na.rm=TRUE)+10, 
+  EMint=TRUE,
+  mval = mval.list,
+  estimation = "imputation", multimp = FALSE,
+  inference = "bootstrap", nboot = 1000)
+res_mediation_0.9_vax <- data.frame(
+  "Statistic" = c("Total effect", "Controlled direct effect", "Proportion eliminated"),
+  "Effect" = 
+    round(c(summary(fit_l)$effect.pe["te"],summary(fit_l)$effect.pe["cde"],summary(fit_l)$effect.pe["pe"]),2),
+  "Lower CL" = 
+    round(c(summary(fit_l)$effect.ci.low["te"],summary(fit_l)$effect.ci.low["cde"],summary(fit_l)$effect.ci.low["pe"]),2),
+  "Upper CL" = 
+    round(c(summary(fit_l)$effect.ci.high["te"],summary(fit_l)$effect.ci.high["cde"],summary(fit_l)$effect.ci.high["pe"]),2),
+  "P-value" = 
+    round(c(summary(fit_l)$effect.pval["te"],summary(fit_l)$effect.pval["cde"],summary(fit_l)$effect.pval["pe"]),3)
+)
+
+res_mediation_0.9_vax %>% 
+  gt() %>%
+  cols_label(
+    Statistic = " ",
+    Lower.CL = "Lower CL",
+    Upper.CL = "Upper CL",
+    P.value = "P-value"
+  ) %>% gt::gtsave(          
+    filename = sprintf("%s/tables/mediation_0.9_vax.html",rootdir))
+
+#75th percentile
+mval.list <- list()
+mval.list <- list(quantile(d_l$Series_Complete_Pop_Pct,0.75,na.rm=TRUE))
+fit_l <- cmest(
+  data=d_l_rf, model="gformula", 
+  outcome = Y, exposure = E, mediator = M, basec = C, 
+  yreg="linear", mreg=rep(list("linear"),length(M)),
+  astar = median(d_l$pctPoverty, na.rm=TRUE), a = median(d_l$pctPoverty, na.rm=TRUE)+10, 
+  EMint=TRUE,
+  mval = mval.list,
+  estimation = "imputation", multimp = FALSE,
+  inference = "bootstrap", nboot = 1000)
+res_mediation_0.75_vax <- data.frame(
+  "Statistic" = c("Total effect", "Controlled direct effect", "Proportion eliminated"),
+  "Effect" = 
+    round(c(summary(fit_l)$effect.pe["te"],summary(fit_l)$effect.pe["cde"],summary(fit_l)$effect.pe["pe"]),2),
+  "Lower CL" = 
+    round(c(summary(fit_l)$effect.ci.low["te"],summary(fit_l)$effect.ci.low["cde"],summary(fit_l)$effect.ci.low["pe"]),2),
+  "Upper CL" = 
+    round(c(summary(fit_l)$effect.ci.high["te"],summary(fit_l)$effect.ci.high["cde"],summary(fit_l)$effect.ci.high["pe"]),2),
+  "P-value" = 
+    round(c(summary(fit_l)$effect.pval["te"],summary(fit_l)$effect.pval["cde"],summary(fit_l)$effect.pval["pe"]),3)
+)
+
+res_mediation_0.75_vax %>% 
+  gt() %>%
+  cols_label(
+    Statistic = " ",
+    Lower.CL = "Lower CL",
+    Upper.CL = "Upper CL",
+    P.value = "P-value"
+  ) %>% gt::gtsave(          
+    filename = sprintf("%s/tables/mediation_0.75_vax.html",rootdir))
+```
+```{r}
+#Vaccination rate set to max
+knitr::kable(res_mediation_max_vax)
+#Vaccination rate set to 90th percentile
+knitr::kable(res_mediation_0.9_vax)
+#Vaccination rate set to 75th percentile
+knitr::kable(res_mediation_0.75_vax)
+```
+
+
+
+##How much of the SES-COVID association is shifted southwest by setting vaccinations to the maximum observed value?
+##PE and risk reduction in COVID-19 mortality for different values of the vaccination rate
+###Does increasing the vaccination rate increase PE of the association between SES and COVID-19 mortality (attenuate health inequity) and reduce average COVID-19 mortality (improve population health)? 
+###Outcome: COVID-19 death rates in 2021
+###Mediator: vaccination rate up to December 31, 2021
+```{r southwest_vax, cache=FALSE, results='hide', fig.width=6, fig.height=10}
+###for each vax, obtain PE and risk reduction in COVID-19 deaths
+#Variable selection
+set.seed(123)
+Y = "deaths_2021"
+E = "pctPoverty"
+M = c(
+    "Series_Complete_Pop_Pct"
+    )
+C = c("PropMale",
+    "PropAbove65",
+    "no.college.diploma",
+    "native",
+    "asian",
+    "black",
+    "white",
+    "hispanic",
+    "state"
+    ) 
+
+d = sdf[c("fips",Y,E,M,C)]
+
+
+createfmla <- function(yvar, xvars) {
+  rhs <- paste(xvars, collapse=" + ")
+  return(as.formula(paste(yvar, "~", rhs, sep=" ")))
+}
+createint <- function(Y,E,M) {
+  list <- NULL
+  for(i in 1:length(M)){
+    list <- c(list,paste(E,M[i], sep="*"))
+    }
+  rhs <- paste(list, collapse=" + ")
+  return(as.formula(paste(Y, "~", rhs, sep=" ")))
+}
+
+set.seed(123)
+
+
+#create dataset
+d_l <- subset(d, state %in% c("AL","AK","AZ","CA","CO","CT","DE",
+                              "FL","GA","HI","ID","IL","IN","DC", 
+                              "KS","KY","LA","ME","MD","MA","MI",
+                              "MN","MT","MS","MO","NV","NH","NJ",
+                              "NM","NY","NC","OH","OK","OR","PA",
+                              "RI","SC","TN","TX","VA","VT","WA",
+                              "WV","WI", #lockdown states
+                              "AR","IA","NE","ND","SD","UT","WY" #no lockdown states
+                              ))
+
+#impute with RF
+set.seed(123)
+d_l_mf <- d_l
+d_l_mf$state <- factor(d_l_mf$state)
+d_l_mf <- subset(d_l_mf, select=-c(fips))
+dimp <- missForest(xmis = d_l_mf, ntree=100, maxiter = 10, parallelize = 'no')
+# dimp$OOBerror
+# dimp$error
+d_l_rf<-cbind(d_l$fips, dimp$ximp)
+
+vax <- NULL
+pe <- NULL
+rd <- NULL
+median_vax = median(d_l$Series_Complete_Pop_Pct, na.rm=TRUE)
+max_vax = max(d_l$Series_Complete_Pop_Pct, na.rm=TRUE)
+plot_vax <- NULL
+n <- 1
+
+for (j in seq(median_vax,max_vax,by=1)){ 
+    mval.list_combined <- list()
+    mval.list_combined <- list(j) 
+    fit_l_combined <- cmest(
+      data=d_l_rf, model="gformula", 
+      outcome = Y, exposure = E, mediator = M, basec = C, 
+      yreg="linear", mreg=rep(list("linear"),length(M)),
+      astar = median(d_l$pctPoverty, na.rm=TRUE), a = median(d_l$pctPoverty, na.rm=TRUE)+10, 
+      EMint=TRUE,
+      mval = mval.list_combined,
+      estimation = "imputation", multimp = FALSE,
+      inference = "bootstrap", nboot = 1)
+    vax[n] = j
+    pe[n] = summary(fit_l_combined)[9]$effect.pe["pe"] * 100
+        
+    #create regression with E, M, C
+    reg = glm(deaths_2021 ~ Series_Complete_Pop_Pct + pctPoverty + pctPoverty*Series_Complete_Pop_Pct + 
+                PropMale + 
+                PropAbove65 +
+                no.college.diploma +
+                native +
+                asian +
+                black +
+                white +
+                hispanic +
+                state,
+              family = gaussian(link="identity"), data = d_l_rf)
+    
+    d_l_mmax <- d_l_rf
+    d_l_mmax$Series_Complete_Pop_Pct <- j
+    
+    #risk reduction (how many fewer deaths per 100,000 population with the specified mediator values?)
+    rd[n] = -(mean(predict(reg, newdata=d_l_mmax)) - mean(d_l_mmax$deaths_2021))
+    
+    n <- n+1
+}
+
+#max risk reduction
+-(mean(predict(reg, newdata=d_l_mmax)) - mean(d_l_mmax$deaths_2021))
+t.test(d_l_mmax$deaths_2021, predict(reg, newdata=d_l_mmax), paired=TRUE)
+
+plot_vax <- data.frame(pe, rd, vax)
+
+fig_vax = ggplot(data = plot_vax, aes(x = pe,y = rd, color = vax)) + 
+  geom_point(size = 3) +
+  scale_x_continuous("Proportion eliminated of the poverty-COVID-19 death rate association (%)") +  
+  scale_y_continuous("Average reduction in COVID-19 deaths per 100,000") +
+  scale_color_gradient(low="blue", high="red") +
+  labs(color="Vaccination \nrate (%)") +
+  theme(legend.position = c(0.8, 0.3),legend.background = element_rect(fill="white",linetype="solid", color ="black")) 
+
+#Variable selection
+set.seed(123)
+Y = "deaths_2021"
+E = "pctPoverty"
+M = c(
+    "Series_Complete_Pop_Pct"
+    )
+C = c("PropMale",
+    "PropAbove65",
+    "no.college.diploma",
+    "native",
+    "asian",
+    "black",
+    "white",
+    "hispanic",
+    "state"
+    ) 
+
+d = sdf[c("fips",Y,E,M,C)]
+
+
+createfmla <- function(yvar, xvars) {
+  rhs <- paste(xvars, collapse=" + ")
+  return(as.formula(paste(yvar, "~", rhs, sep=" ")))
+}
+createint <- function(Y,E,M) {
+  list <- NULL
+  for(i in 1:length(M)){
+    list <- c(list,paste(E,M[i], sep="*"))
+    }
+  rhs <- paste(list, collapse=" + ")
+  return(as.formula(paste(Y, "~", rhs, sep=" ")))
+}
+
+set.seed(123)
+
+
+#create dataset
+d_l <- subset(d, state %in% c("AL","AK","AZ","CA","CO","CT","DE",
+                              "FL","GA","HI","ID","IL","IN","DC", 
+                              "KS","KY","LA","ME","MD","MA","MI",
+                              "MN","MT","MS","MO","NV","NH","NJ",
+                              "NM","NY","NC","OH","OK","OR","PA",
+                              "RI","SC","TN","TX","VA","VT","WA",
+                              "WV","WI", #lockdown states
+                              "AR","IA","NE","ND","SD","UT","WY" #no lockdown states
+                              ))
+
+#impute with RF
+set.seed(123)
+d_l_mf <- d_l
+d_l_mf$state <- factor(d_l_mf$state)
+d_l_mf <- subset(d_l_mf, select=-c(fips))
+dimp <- missForest(xmis = d_l_mf, ntree=100, maxiter = 10, parallelize = 'no')
+# dimp$OOBerror
+# dimp$error
+d_l_rf<-cbind(d_l$fips, dimp$ximp)
+
+#the original association
+reg = glm(createfmla(Y, E), family = gaussian(link="identity"), data = d_l_rf)
+summary(reg)
+
+#create regression with E, M, C, and predict Y with max vax
+#with E-M interaction
+reg = glm(deaths_2021 ~ pctPoverty + Series_Complete_Pop_Pct + pctPoverty*Series_Complete_Pop_Pct + 
+            PropMale + 
+            PropAbove65 +
+            no.college.diploma +
+            native +
+            asian +
+            black +
+            white +
+            hispanic +
+            state,
+          family = gaussian(link="identity"), data = d_l_rf)
+d_l_mmax <- d_l_rf
+d_l_mmax$Series_Complete_Pop_Pct <- max(d_l$Series_Complete_Pop_Pct,na.rm=TRUE)
+d_l_mmax[Y] <- predict(reg, newdata=d_l_mmax)
+
+#Regress with predicted Y
+reg = glm(createfmla(Y, E), family = gaussian(link="identity"), data = d_l_mmax)
+summary(reg)
+
+#add to scatterplot
+fig  <-  ggpubr::ggscatter(data=d_l, x="pctPoverty",y="deaths_2021", fill="grey45", color="grey45",
+                            xlab = "Poverty rate (%)", ylab = "COVID-19 deaths per 100,000",
+                            add = "reg.line", #conf.int = TRUE, 
+                            #cor.coef = TRUE, 
+                            cor.method = "pearson",
+                            add.params = list(color = "Black",fill = "Black") 
+) 
+scatterplot_vax = 
+  fig + 
+    geom_segment(aes(x = min(d_l$pctPoverty, na.rm=TRUE), xend = max(d_l$pctPoverty, na.rm=TRUE), 
+                     y = coef(reg)["(Intercept)"] + coef(reg)["pctPoverty"]*min(d_l$pctPoverty, na.rm=TRUE), 
+                     yend = coef(reg)["(Intercept)"] + coef(reg)["pctPoverty"]*max(d_l$pctPoverty, na.rm=TRUE)),
+                 color="red", lwd=1) + 
+    xlim(min(d_l$pctPoverty, na.rm=TRUE), max(d_l$pctPoverty, na.rm=TRUE)) +
+    annotate(geom="text", x=45, y=110, label="Vaccination rate \nmaximized", color="red") +
+    annotate(geom="text", x=45, y=290, label="Observed \nvaccination rate", color="Black")
+
+
+pdf(sprintf("%s/figures/southwest_vax.pdf",rootdir), width=6, height=10)
+ggarrange(fig_vax, scatterplot_vax, ncol = 1, labels = c("A", "B"))
+dev.off()
+
+ggarrange(fig_vax, scatterplot_vax, ncol = 1, labels = c("A", "B"))
+```
